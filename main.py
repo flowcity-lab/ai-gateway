@@ -123,6 +123,7 @@ class ChatRequest(BaseModel):
     trainer_memories: list = []
     skills: list = []
     tool_definitions: list = []       # Fertige OpenAI Tool-Definitionen von Laravel
+    images: list = []                 # Base64-Bilder für Vision-Analyse [{"data": "base64...", "media_type": "image/png"}]
     callback_url: str = ""
     mode: str = "async"  # "async" (default) oder "sync"
     # RAG-Konfiguration
@@ -686,8 +687,25 @@ def build_messages(data: ChatRequest, rag_context: list = None) -> list:
     # Conversation History (bereits als role/content dicts)
     messages.extend(data.conversation_history)
 
-    # Aktuelle Nachricht
-    messages.append({"role": "user", "content": data.message})
+    # Aktuelle Nachricht (mit Vision-Bildern wenn vorhanden)
+    if data.images:
+        # OpenAI Vision Format: content ist ein Array aus text + image_url Objekten
+        content_parts = [{"type": "text", "text": data.message}]
+        for img in data.images:
+            media_type = img.get("media_type", "image/png")
+            b64_data = img.get("data", "")
+            if b64_data:
+                content_parts.append({
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:{media_type};base64,{b64_data}",
+                        "detail": "high",
+                    }
+                })
+        messages.append({"role": "user", "content": content_parts})
+        log.info("Chat %d: Vision-Nachricht mit %d Bildern", data.chat_id, len(data.images))
+    else:
+        messages.append({"role": "user", "content": data.message})
 
     return messages
 
