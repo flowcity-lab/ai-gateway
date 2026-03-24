@@ -164,152 +164,196 @@ def get_skill_label(skill_name: str) -> dict:
 # mit diesen Klassen — das CSS macht den Rest. Branding-Variablen (--primary etc.)
 # werden dynamisch vom Gateway mit den Trainer-Farben befüllt.
 ARTIFACT_BASE_CSS = """
-/* ─── Artifact Design System v1.0 ─── */
+/* ─── Artifact Design System v2.0 — Premium ─── */
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 :root{
   --primary:#6366f1;--primary-light:#818cf8;--primary-dark:#4f46e5;
   --secondary:#8b5cf6;--accent:#f59e0b;
   --success:#10b981;--warning:#f59e0b;--danger:#ef4444;--info:#3b82f6;
-  --bg:transparent;--bg-card:rgba(255,255,255,0.6);--bg-subtle:rgba(0,0,0,0.02);
+  --bg:transparent;--bg-card:rgba(255,255,255,0.72);--bg-subtle:rgba(0,0,0,0.025);
+  --bg-glass:rgba(255,255,255,0.55);
   --text:#1e293b;--text-secondary:#64748b;--text-muted:#94a3b8;
-  --border:rgba(0,0,0,0.08);--border-strong:rgba(0,0,0,0.15);
-  --radius:12px;--radius-sm:8px;--radius-xs:6px;
-  --shadow:0 1px 3px rgba(0,0,0,0.06),0 1px 2px rgba(0,0,0,0.04);
-  --shadow-md:0 4px 12px rgba(0,0,0,0.08);
+  --border:rgba(0,0,0,0.06);--border-strong:rgba(0,0,0,0.12);
+  --radius:14px;--radius-sm:10px;--radius-xs:6px;
+  --shadow:0 1px 2px rgba(0,0,0,0.04),0 4px 16px rgba(0,0,0,0.06);
+  --shadow-md:0 2px 4px rgba(0,0,0,0.04),0 8px 24px rgba(0,0,0,0.1);
+  --shadow-lg:0 4px 6px rgba(0,0,0,0.03),0 12px 40px rgba(0,0,0,0.12);
+  --shadow-glow:0 0 20px rgba(99,102,241,0.15);
   --font:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;
   --font-mono:'SF Mono',SFMono-Regular,Menlo,Consolas,monospace;
-  --transition:0.2s ease;
+  --transition:0.2s cubic-bezier(.4,0,.2,1);
+  --gradient:linear-gradient(135deg,var(--primary),var(--secondary));
 }
 @media(prefers-color-scheme:dark){
   :root{
-    --bg:transparent;--bg-card:rgba(30,30,46,0.7);--bg-subtle:rgba(255,255,255,0.04);
+    --bg:transparent;--bg-card:rgba(30,30,50,0.65);--bg-subtle:rgba(255,255,255,0.04);
+    --bg-glass:rgba(30,30,50,0.5);
     --text:#e2e8f0;--text-secondary:#94a3b8;--text-muted:#64748b;
-    --border:rgba(255,255,255,0.08);--border-strong:rgba(255,255,255,0.15);
-    --shadow:0 1px 3px rgba(0,0,0,0.3);--shadow-md:0 4px 12px rgba(0,0,0,0.4);
+    --border:rgba(255,255,255,0.06);--border-strong:rgba(255,255,255,0.12);
+    --shadow:0 1px 2px rgba(0,0,0,0.2),0 4px 16px rgba(0,0,0,0.3);
+    --shadow-md:0 2px 4px rgba(0,0,0,0.2),0 8px 24px rgba(0,0,0,0.35);
+    --shadow-lg:0 4px 6px rgba(0,0,0,0.2),0 12px 40px rgba(0,0,0,0.4);
+    --shadow-glow:0 0 24px rgba(99,102,241,0.2);
   }
 }
-body{background:var(--bg);color:var(--text);font-family:var(--font);font-size:14px;line-height:1.6;padding:0;margin:0}
-a{color:var(--primary);text-decoration:none}a:hover{text-decoration:underline}
+body{background:var(--bg);color:var(--text);font-family:var(--font);font-size:14px;line-height:1.6;padding:0;margin:0;-webkit-font-smoothing:antialiased}
+a{color:var(--primary);text-decoration:none;transition:var(--transition)}a:hover{opacity:0.85}
 
-/* ─── Layout Utilities ─── */
+/* ─── Layout ─── */
 .grid{display:grid;gap:1rem}.cols-2{grid-template-columns:repeat(2,1fr)}.cols-3{grid-template-columns:repeat(3,1fr)}.cols-4{grid-template-columns:repeat(4,1fr)}
-.flex{display:flex}.flex-col{flex-direction:column}.items-center{align-items:center}.justify-between{justify-content:space-between}.gap-1{gap:0.25rem}.gap-2{gap:0.5rem}.gap-3{gap:0.75rem}.gap-4{gap:1rem}
-.p-2{padding:0.5rem}.p-3{padding:0.75rem}.p-4{padding:1rem}.p-5{padding:1.25rem}.p-6{padding:1.5rem}
-.mt-1{margin-top:0.25rem}.mt-2{margin-top:0.5rem}.mt-3{margin-top:0.75rem}.mt-4{margin-top:1rem}.mb-2{margin-bottom:0.5rem}.mb-4{margin-bottom:1rem}
+.flex{display:flex}.flex-col{flex-direction:column}.flex-wrap{flex-wrap:wrap}.items-center{align-items:center}.items-start{align-items:flex-start}.justify-between{justify-content:space-between}.justify-center{justify-content:center}
+.gap-1{gap:0.25rem}.gap-2{gap:0.5rem}.gap-3{gap:0.75rem}.gap-4{gap:1rem}.gap-5{gap:1.25rem}.gap-6{gap:1.5rem}
+.p-2{padding:0.5rem}.p-3{padding:0.75rem}.p-4{padding:1rem}.p-5{padding:1.25rem}.p-6{padding:1.5rem}.p-8{padding:2rem}
+.px-4{padding-left:1rem;padding-right:1rem}.py-2{padding-top:0.5rem;padding-bottom:0.5rem}
+.mt-1{margin-top:0.25rem}.mt-2{margin-top:0.5rem}.mt-3{margin-top:0.75rem}.mt-4{margin-top:1rem}.mt-6{margin-top:1.5rem}.mb-1{margin-bottom:0.25rem}.mb-2{margin-bottom:0.5rem}.mb-3{margin-bottom:0.75rem}.mb-4{margin-bottom:1rem}.mb-6{margin-bottom:1.5rem}
 .w-full{width:100%}.text-center{text-align:center}.text-right{text-align:right}.text-left{text-align:left}
 .hidden{display:none}.block{display:block}.inline{display:inline}.inline-block{display:inline-block}
 .overflow-auto{overflow:auto}.overflow-hidden{overflow:hidden}
 .relative{position:relative}.absolute{position:absolute}
-@media(max-width:640px){.cols-2,.cols-3,.cols-4{grid-template-columns:1fr}}
+@media(max-width:640px){.cols-2,.cols-3,.cols-4{grid-template-columns:1fr}.p-6,.p-8{padding:1rem}}
 
 /* ─── Typography ─── */
-h1,h2,h3,h4{font-weight:700;color:var(--text);line-height:1.3}
-h1{font-size:1.5rem;margin-bottom:0.75rem}h2{font-size:1.25rem;margin-bottom:0.5rem}h3{font-size:1.1rem;margin-bottom:0.5rem}h4{font-size:1rem}
+h1,h2,h3,h4{font-weight:700;color:var(--text);line-height:1.25;letter-spacing:-0.01em}
+h1{font-size:1.5rem;margin-bottom:0.5rem}h2{font-size:1.25rem;margin-bottom:0.5rem}h3{font-size:1.1rem;margin-bottom:0.375rem}h4{font-size:1rem}
+.section-title{font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:var(--text-muted);margin-bottom:0.75rem;display:flex;align-items:center;gap:0.5rem}
+.section-title::after{content:'';flex:1;height:1px;background:var(--border)}
 .text-xs{font-size:0.75rem}.text-sm{font-size:0.875rem}.text-base{font-size:1rem}.text-lg{font-size:1.125rem}.text-xl{font-size:1.25rem}.text-2xl{font-size:1.5rem}.text-3xl{font-size:1.875rem}.text-4xl{font-size:2.25rem}
 .font-bold{font-weight:700}.font-semibold{font-weight:600}.font-medium{font-weight:500}.font-normal{font-weight:400}
 .text-primary{color:var(--primary)}.text-success{color:var(--success)}.text-warning{color:var(--warning)}.text-danger{color:var(--danger)}.text-muted{color:var(--text-muted)}.text-secondary{color:var(--text-secondary)}
+.text-gradient{background:var(--gradient);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
 .mono{font-family:var(--font-mono)}
 .truncate{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .leading-tight{line-height:1.25}.leading-relaxed{line-height:1.75}
 
-/* ─── Cards ─── */
-.card{background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);padding:1.25rem;box-shadow:var(--shadow);transition:var(--transition)}
-.card:hover{box-shadow:var(--shadow-md)}
+/* ─── Cards — Glassmorphism ─── */
+.card{background:var(--bg-card);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);border:1px solid var(--border);border-radius:var(--radius);padding:1.5rem;box-shadow:var(--shadow);transition:var(--transition)}
+.card:hover{box-shadow:var(--shadow-md);transform:translateY(-1px)}
 .card-flat{background:var(--bg-subtle);border:1px solid var(--border);border-radius:var(--radius);padding:1.25rem}
-.card-accent{border-left:4px solid var(--primary);background:var(--bg-card);border-radius:var(--radius);padding:1.25rem;box-shadow:var(--shadow)}
+.card-accent{border-left:3px solid var(--primary);background:var(--bg-card);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);border-radius:var(--radius);padding:1.25rem;box-shadow:var(--shadow)}
+.card-glass{background:var(--bg-glass);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);border:1px solid var(--border);border-radius:var(--radius);padding:1.5rem;box-shadow:var(--shadow)}
+.card-gradient{background:var(--gradient);border-radius:var(--radius);padding:1.5rem;color:#fff;box-shadow:var(--shadow-md)}
+.card-gradient .text-muted,.card-gradient .text-secondary,.card-gradient .kpi-label{color:rgba(255,255,255,0.75)}
+.card-gradient .kpi-value,.card-gradient h1,.card-gradient h2,.card-gradient h3{color:#fff}
 
-/* ─── KPI / Metric Cards ─── */
-.kpi{background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);padding:1.25rem;text-align:center;box-shadow:var(--shadow);transition:var(--transition)}
-.kpi:hover{box-shadow:var(--shadow-md);transform:translateY(-1px)}
-.kpi-value{font-size:2rem;font-weight:800;color:var(--primary);line-height:1.1}
-.kpi-label{font-size:0.8rem;color:var(--text-secondary);margin-top:0.25rem;text-transform:uppercase;letter-spacing:0.05em;font-weight:600}
-.kpi-trend{font-size:0.8rem;margin-top:0.5rem;font-weight:600}
-.kpi-trend.up{color:var(--success)}.kpi-trend.down{color:var(--danger)}.kpi-trend.neutral{color:var(--text-muted)}
-.kpi-icon{font-size:1.5rem;margin-bottom:0.5rem}
+/* ─── KPI / Metric Cards — Premium ─── */
+.kpi{background:var(--bg-card);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);border:1px solid var(--border);border-radius:var(--radius);padding:1.25rem 1.5rem;position:relative;overflow:hidden;box-shadow:var(--shadow);transition:var(--transition)}
+.kpi:hover{box-shadow:var(--shadow-md);transform:translateY(-2px)}
+.kpi::before{content:'';position:absolute;top:0;left:0;right:0;height:3px;background:var(--gradient);opacity:0.8}
+.kpi-icon{width:2.5rem;height:2.5rem;border-radius:var(--radius-sm);background:linear-gradient(135deg,rgba(99,102,241,0.12),rgba(139,92,246,0.12));display:flex;align-items:center;justify-content:center;font-size:1.15rem;margin-bottom:0.75rem}
+.kpi-value{font-size:1.85rem;font-weight:800;background:var(--gradient);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;line-height:1.1;letter-spacing:-0.02em}
+.kpi-label{font-size:0.72rem;color:var(--text-muted);margin-top:0.25rem;text-transform:uppercase;letter-spacing:0.06em;font-weight:600}
+.kpi-trend{font-size:0.75rem;margin-top:0.5rem;font-weight:600;display:inline-flex;align-items:center;gap:0.25rem;padding:0.15rem 0.5rem;border-radius:999px}
+.kpi-trend.up{color:var(--success);background:rgba(16,185,129,0.1)}.kpi-trend.down{color:var(--danger);background:rgba(239,68,68,0.1)}.kpi-trend.neutral{color:var(--text-muted);background:var(--bg-subtle)}
+.kpi-row{display:flex;align-items:flex-end;justify-content:space-between;gap:0.75rem}
 
-/* ─── Tables ─── */
-.table-wrap{overflow-x:auto;border-radius:var(--radius);border:1px solid var(--border);box-shadow:var(--shadow)}
-table{width:100%;border-collapse:collapse;font-size:0.875rem}
-th{background:var(--bg-subtle);font-weight:600;text-align:left;padding:0.75rem 1rem;border-bottom:2px solid var(--border-strong);color:var(--text-secondary);font-size:0.75rem;text-transform:uppercase;letter-spacing:0.05em;position:sticky;top:0;z-index:1}
-td{padding:0.75rem 1rem;border-bottom:1px solid var(--border);vertical-align:middle}
-tr:hover td{background:var(--bg-subtle)}
+/* ─── Tables — Polished ─── */
+.table-wrap{overflow-x:auto;border-radius:var(--radius);border:1px solid var(--border);box-shadow:var(--shadow);background:var(--bg-card);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px)}
+table{width:100%;border-collapse:collapse;font-size:0.85rem}
+th{background:var(--bg-subtle);font-weight:600;text-align:left;padding:0.75rem 1rem;border-bottom:1px solid var(--border-strong);color:var(--text-secondary);font-size:0.7rem;text-transform:uppercase;letter-spacing:0.06em;position:sticky;top:0;z-index:1}
+td{padding:0.7rem 1rem;border-bottom:1px solid var(--border);vertical-align:middle}
+tr:hover td{background:rgba(99,102,241,0.03)}
 tr:last-child td{border-bottom:none}
+td .flex{gap:0.5rem}
 
 /* ─── Badges / Pills ─── */
-.badge{display:inline-flex;align-items:center;gap:0.25rem;padding:0.2rem 0.6rem;border-radius:999px;font-size:0.75rem;font-weight:600;line-height:1.4}
-.badge-primary{background:rgba(99,102,241,0.12);color:var(--primary)}
-.badge-success{background:rgba(16,185,129,0.12);color:var(--success)}
-.badge-warning{background:rgba(245,158,11,0.12);color:var(--warning)}
-.badge-danger{background:rgba(239,68,68,0.12);color:var(--danger)}
-.badge-info{background:rgba(59,130,246,0.12);color:var(--info)}
+.badge{display:inline-flex;align-items:center;gap:0.25rem;padding:0.2rem 0.65rem;border-radius:999px;font-size:0.72rem;font-weight:600;line-height:1.4;letter-spacing:0.01em}
+.badge-primary{background:rgba(99,102,241,0.1);color:var(--primary)}
+.badge-success{background:rgba(16,185,129,0.1);color:var(--success)}
+.badge-warning{background:rgba(245,158,11,0.1);color:var(--warning)}
+.badge-danger{background:rgba(239,68,68,0.1);color:var(--danger)}
+.badge-info{background:rgba(59,130,246,0.1);color:var(--info)}
 .badge-neutral{background:var(--bg-subtle);color:var(--text-secondary)}
+.badge-dot::before{content:'';width:6px;height:6px;border-radius:50%;background:currentColor}
 
 /* ─── Progress Bars ─── */
-.progress{height:8px;background:var(--bg-subtle);border-radius:999px;overflow:hidden}
-.progress-bar{height:100%;border-radius:999px;background:var(--primary);transition:width 0.6s ease}
+.progress{height:6px;background:var(--bg-subtle);border-radius:999px;overflow:hidden}
+.progress-bar{height:100%;border-radius:999px;background:var(--gradient);transition:width 0.8s cubic-bezier(.4,0,.2,1)}
 .progress-bar.success{background:var(--success)}.progress-bar.warning{background:var(--warning)}.progress-bar.danger{background:var(--danger)}
-.progress-lg{height:12px}
-.progress-label{display:flex;justify-content:space-between;font-size:0.8rem;color:var(--text-secondary);margin-bottom:0.25rem}
+.progress-lg{height:10px}
+.progress-label{display:flex;justify-content:space-between;font-size:0.78rem;color:var(--text-secondary);margin-bottom:0.3rem;font-weight:500}
 
 /* ─── Lists ─── */
 .list{list-style:none;padding:0;margin:0}
-.list-item{display:flex;align-items:center;gap:0.75rem;padding:0.75rem 0;border-bottom:1px solid var(--border)}
+.list-item{display:flex;align-items:center;gap:0.75rem;padding:0.65rem 0;border-bottom:1px solid var(--border)}
 .list-item:last-child{border-bottom:none}
-.list-icon{width:2.25rem;height:2.25rem;border-radius:var(--radius-xs);background:rgba(99,102,241,0.1);display:flex;align-items:center;justify-content:center;font-size:1rem;flex-shrink:0}
+.list-icon{width:2.25rem;height:2.25rem;border-radius:var(--radius-sm);background:linear-gradient(135deg,rgba(99,102,241,0.1),rgba(139,92,246,0.08));display:flex;align-items:center;justify-content:center;font-size:1rem;flex-shrink:0}
 .list-content{flex:1;min-width:0}
 
-/* ─── Tabs (CSS-only) ─── */
+/* ─── Tabs ─── */
 .tabs{display:flex;gap:0;border-bottom:2px solid var(--border);margin-bottom:1rem}
-.tab{padding:0.6rem 1rem;font-size:0.875rem;font-weight:500;color:var(--text-secondary);cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-2px;transition:var(--transition);user-select:none}
+.tab{padding:0.6rem 1rem;font-size:0.85rem;font-weight:500;color:var(--text-secondary);cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-2px;transition:var(--transition);user-select:none}
 .tab:hover{color:var(--text)}.tab.active{color:var(--primary);border-bottom-color:var(--primary);font-weight:600}
 
 /* ─── Alerts ─── */
-.alert{padding:0.875rem 1rem;border-radius:var(--radius-sm);font-size:0.875rem;display:flex;align-items:flex-start;gap:0.5rem}
-.alert-info{background:rgba(59,130,246,0.08);color:var(--info);border:1px solid rgba(59,130,246,0.15)}
-.alert-success{background:rgba(16,185,129,0.08);color:var(--success);border:1px solid rgba(16,185,129,0.15)}
-.alert-warning{background:rgba(245,158,11,0.08);color:var(--warning);border:1px solid rgba(245,158,11,0.15)}
-.alert-danger{background:rgba(239,68,68,0.08);color:var(--danger);border:1px solid rgba(239,68,68,0.15)}
+.alert{padding:0.875rem 1rem;border-radius:var(--radius-sm);font-size:0.85rem;display:flex;align-items:flex-start;gap:0.5rem;backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px)}
+.alert-info{background:rgba(59,130,246,0.07);color:var(--info);border:1px solid rgba(59,130,246,0.12)}
+.alert-success{background:rgba(16,185,129,0.07);color:var(--success);border:1px solid rgba(16,185,129,0.12)}
+.alert-warning{background:rgba(245,158,11,0.07);color:var(--warning);border:1px solid rgba(245,158,11,0.12)}
+.alert-danger{background:rgba(239,68,68,0.07);color:var(--danger);border:1px solid rgba(239,68,68,0.12)}
 
 /* ─── Divider ─── */
-.divider{border:none;border-top:1px solid var(--border);margin:1rem 0}
+.divider{border:none;border-top:1px solid var(--border);margin:1.25rem 0}
 
 /* ─── Tags/Chips ─── */
-.tag{display:inline-flex;align-items:center;gap:0.25rem;padding:0.25rem 0.5rem;background:var(--bg-subtle);border:1px solid var(--border);border-radius:var(--radius-xs);font-size:0.75rem;color:var(--text-secondary)}
+.tag{display:inline-flex;align-items:center;gap:0.25rem;padding:0.2rem 0.5rem;background:var(--bg-subtle);border:1px solid var(--border);border-radius:var(--radius-xs);font-size:0.72rem;color:var(--text-secondary);font-weight:500}
 
 /* ─── Tooltips ─── */
 [data-tip]{position:relative;cursor:help}
 [data-tip]::after{content:attr(data-tip);position:absolute;bottom:calc(100% + 6px);left:50%;transform:translateX(-50%);background:#1e293b;color:#fff;padding:0.3rem 0.6rem;border-radius:var(--radius-xs);font-size:0.7rem;white-space:nowrap;opacity:0;pointer-events:none;transition:opacity 0.15s}
 [data-tip]:hover::after{opacity:1}
 
-/* ─── Charts (CSS-only Bars) ─── */
-.bar-chart{display:flex;align-items:flex-end;gap:0.5rem;height:160px;padding-top:1rem}
-.bar{flex:1;background:var(--primary);border-radius:var(--radius-xs) var(--radius-xs) 0 0;min-width:24px;position:relative;transition:height 0.4s ease}
-.bar:hover{opacity:0.85}.bar-label{position:absolute;bottom:-1.5rem;left:50%;transform:translateX(-50%);font-size:0.65rem;color:var(--text-muted);white-space:nowrap}
-.bar-value{position:absolute;top:-1.25rem;left:50%;transform:translateX(-50%);font-size:0.7rem;font-weight:600;color:var(--text)}
+/* ─── Charts (CSS-only Bars) — Enhanced ─── */
+.bar-chart{display:flex;align-items:flex-end;gap:0.5rem;height:180px;padding:1.5rem 0 1.5rem 0;border-bottom:1px solid var(--border)}
+.bar{flex:1;border-radius:var(--radius-xs) var(--radius-xs) 0 0;min-width:20px;position:relative;transition:all 0.5s cubic-bezier(.4,0,.2,1);background:var(--gradient)}
+.bar:hover{filter:brightness(1.1);transform:scaleY(1.02);transform-origin:bottom}
+.bar-label{position:absolute;bottom:-1.5rem;left:50%;transform:translateX(-50%);font-size:0.65rem;color:var(--text-muted);white-space:nowrap;font-weight:500}
+.bar-value{position:absolute;top:-1.4rem;left:50%;transform:translateX(-50%);font-size:0.7rem;font-weight:700;color:var(--text)}
+.bar.secondary{background:var(--secondary)}.bar.success{background:var(--success)}.bar.info{background:var(--info)}.bar.warning{background:var(--warning)}.bar.danger{background:var(--danger)}
 
 /* ─── Donut Chart (SVG helper) ─── */
 .donut-chart{position:relative;display:inline-flex;align-items:center;justify-content:center}
-.donut-label{position:absolute;text-align:center;font-weight:700;font-size:1.25rem;color:var(--text)}
+.donut-label{position:absolute;text-align:center}
+.donut-label strong{display:block;font-size:1.5rem;font-weight:800;background:var(--gradient);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
+.donut-label span{font-size:0.7rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.05em}
 
-/* ─── Timeline ─── */
+/* ─── Timeline — Refined ─── */
 .timeline{position:relative;padding-left:2rem}
-.timeline::before{content:'';position:absolute;left:0.5rem;top:0;bottom:0;width:2px;background:var(--border)}
+.timeline::before{content:'';position:absolute;left:0.55rem;top:0;bottom:0;width:2px;background:linear-gradient(to bottom,var(--primary),var(--secondary),var(--border));border-radius:1px}
 .timeline-item{position:relative;padding-bottom:1.25rem}
-.timeline-item::before{content:'';position:absolute;left:-1.5rem;top:0.35rem;width:10px;height:10px;border-radius:50%;background:var(--primary);border:2px solid var(--bg-card);z-index:1}
+.timeline-item::before{content:'';position:absolute;left:-1.45rem;top:0.35rem;width:10px;height:10px;border-radius:50%;background:var(--primary);box-shadow:0 0 0 3px var(--bg-card),var(--shadow);z-index:1}
 .timeline-item.done::before{background:var(--success)}.timeline-item.pending::before{background:var(--text-muted)}
-.timeline-date{font-size:0.75rem;color:var(--text-muted);margin-bottom:0.125rem}
+.timeline-date{font-size:0.72rem;color:var(--text-muted);margin-bottom:0.125rem;font-weight:500}
 
-/* ─── Animations ─── */
-@keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
-@keyframes countUp{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
-.animate-in{animation:fadeIn 0.4s ease both}
-.animate-in-1{animation-delay:0.05s}.animate-in-2{animation-delay:0.1s}.animate-in-3{animation-delay:0.15s}.animate-in-4{animation-delay:0.2s}
-.kpi-value{animation:countUp 0.5s ease both}
+/* ─── Score / Rating ─── */
+.score-ring{width:64px;height:64px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:1.25rem;font-weight:800;color:#fff;background:var(--gradient);box-shadow:var(--shadow-glow)}
+.score-ring.lg{width:80px;height:80px;font-size:1.5rem}
+.stars{color:var(--accent);letter-spacing:2px;font-size:1.1rem}
+
+/* ─── Stat Highlight Row ─── */
+.stat-row{display:flex;align-items:center;justify-content:space-between;padding:0.6rem 0;border-bottom:1px solid var(--border)}
+.stat-row:last-child{border-bottom:none}
+.stat-row .label{font-size:0.85rem;color:var(--text-secondary)}
+.stat-row .value{font-size:0.95rem;font-weight:700;color:var(--text)}
+
+/* ─── Animations — Refined ─── */
+@keyframes fadeIn{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
+@keyframes slideIn{from{opacity:0;transform:translateX(-8px)}to{opacity:1;transform:translateX(0)}}
+@keyframes scaleIn{from{opacity:0;transform:scale(0.95)}to{opacity:1;transform:scale(1)}}
+@keyframes shimmer{0%{background-position:-200% 0}100%{background-position:200% 0}}
+.animate-in{animation:fadeIn 0.45s cubic-bezier(.4,0,.2,1) both}
+.animate-in-1{animation-delay:0.06s}.animate-in-2{animation-delay:0.12s}.animate-in-3{animation-delay:0.18s}.animate-in-4{animation-delay:0.24s}.animate-in-5{animation-delay:0.3s}
+.animate-slide{animation:slideIn 0.4s cubic-bezier(.4,0,.2,1) both}
+.animate-scale{animation:scaleIn 0.35s cubic-bezier(.4,0,.2,1) both}
+.kpi-value{animation:fadeIn 0.5s cubic-bezier(.4,0,.2,1) both}
+
+/* ─── Utility Decorators ─── */
+.rounded{border-radius:var(--radius)}.rounded-sm{border-radius:var(--radius-sm)}.rounded-full{border-radius:999px}
+.shadow{box-shadow:var(--shadow)}.shadow-md{box-shadow:var(--shadow-md)}.shadow-lg{box-shadow:var(--shadow-lg)}
+.border{border:1px solid var(--border)}.border-b{border-bottom:1px solid var(--border)}
+.opacity-75{opacity:0.75}.opacity-50{opacity:0.5}
 
 /* ─── Scrollbar ─── */
-::-webkit-scrollbar{width:6px;height:6px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:var(--border-strong);border-radius:3px}
-
-/* ─── Auto-Resize Bridge (injected by Gateway) ─── */
+::-webkit-scrollbar{width:5px;height:5px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:var(--border-strong);border-radius:3px}::-webkit-scrollbar-thumb:hover{background:var(--text-muted)}
 """
 
 # Resize-Script das in jedes Artifact injiziert wird (postMessage für Auto-Höhe)
@@ -371,13 +415,11 @@ RENDER_ARTIFACT_TOOL = {
     "function": {
         "name": "render_artifact",
         "description": (
-            "Rendere eine interaktive HTML-Visualisierung nahtlos inline im Chat. "
-            "Nutze dies für Tabellen, KPI-Dashboards, Karten, Charts, Vergleiche, "
-            "Checklisten, Timelines, interaktive Rechner — alles was visuell "
-            "besser wirkt als reiner Text. Du musst NUR den HTML-Body-Inhalt liefern — "
-            "ein umfassendes CSS Design-System mit Utility-Klassen und Komponenten "
-            "(cards, kpis, tables, badges, progress bars, bar-charts, timelines etc.) "
-            "wird automatisch injiziert. Nutze die vordefinierten CSS-Klassen."
+            "Rendere ein Premium-HTML-Dashboard nahtlos inline im Chat. "
+            "WICHTIG: Rufe dieses Tool pro Antwort MAXIMAL EINMAL auf — "
+            "kombiniere ALLE Daten (KPIs, Tabellen, Charts) in EINEM Artifact. "
+            "Ein CSS Design-System v2.0 mit Glassmorphism, Gradient-Akzenten und "
+            "Premium-Komponenten wird automatisch injiziert. Nutze die vordefinierten Klassen."
         ),
         "parameters": {
             "type": "object",
@@ -389,13 +431,13 @@ RENDER_ARTIFACT_TOOL = {
                 "html": {
                     "type": "string",
                     "description": (
-                        "HTML-Content der die vordefinierten CSS-Klassen des Design-Systems nutzt. "
-                        "Kein eigenes CSS nötig — nutze: .card, .kpi, .kpi-value, .kpi-label, "
-                        ".table-wrap+table, .badge-*, .progress, .bar-chart+.bar, .timeline, "
-                        ".grid .cols-2/3/4, .alert-*, .tag, .list+.list-item. "
-                        "Hintergrund ist transparent (fügt sich nahtlos in den Chat ein). "
-                        "Dark-Mode wird automatisch unterstützt. "
-                        "Für CRM-Links: <a href=\"/crm/contacts/{id}\" target=\"_top\">."
+                        "Vollständiges HTML-Dashboard das ALLE Informationen zusammenfasst. "
+                        "Nutze die CSS-Klassen: .kpi (mit .kpi-icon/.kpi-value/.kpi-label/.kpi-trend.up/.down), "
+                        ".card/.card-glass/.card-gradient/.card-accent, .grid .cols-2/3/4, "
+                        ".table-wrap+table, .badge-*/.badge-dot, .progress+.progress-bar, "
+                        ".bar-chart+.bar, .timeline, .score-ring, .stat-row, .section-title, "
+                        ".text-gradient, .animate-in + .animate-in-1 bis -5. "
+                        "Hintergrund ist transparent. Dark-Mode wird automatisch unterstützt."
                     ),
                 },
             },
@@ -407,41 +449,58 @@ RENDER_ARTIFACT_TOOL = {
 
 ARTIFACT_SYSTEM_PROMPT = """
 
-## Artifact-System (Visualisierungen)
+## Artifact-System (Premium-Visualisierungen)
 
-Du hast ein mächtiges Tool `render_artifact` zur Verfügung, mit dem du interaktive HTML-Visualisierungen nahtlos im Chat rendern kannst — ähnlich wie Claude Artifacts. Ein umfassendes **CSS Design-System** wird automatisch injiziert — du musst KEIN eigenes CSS schreiben!
+Du hast das Tool `render_artifact` zur Verfügung, mit dem du interaktive HTML-Visualisierungen nahtlos im Chat rendern kannst. Ein umfassendes **CSS Design-System v2.0** mit Glassmorphism, Gradient-Akzenten und Premium-Komponenten wird automatisch injiziert.
+
+### ⚠️ KRITISCHE REGELN:
+
+1. **EIN ARTIFACT PRO ANTWORT** — Erstelle IMMER genau EIN umfassendes Artifact. Rufe `render_artifact` NIEMALS mehrmals auf. Kombiniere ALLE Informationen (KPIs, Tabellen, Charts, Listen) in EINEM zusammenhängenden Dashboard-Layout.
+
+2. **Denke wie ein Dashboard-Designer** — Schaffe visuelle Hierarchie: Überschrift oben, KPIs als Grid, dann Details/Tabellen, dann ergänzende Infos. Nutze `section-title` für Abschnitte.
+
+3. **Nutze die vordefinierten Klassen** — Schreibe möglichst KEIN eigenes CSS. Das Design-System bietet alles.
 
 ### Wann nutzen:
-- Tabellen mit Daten (sortierbar, durchsuchbar)
-- KPI-Dashboards mit großen Zahlen und Trends
-- Kontakt-/Deal-Karten mit Links zum CRM
-- Vergleichstabellen (Pro/Contra, Feature-Matrix)
-- Interaktive Elemente (Schieberegler, Rechner, Quiz)
+- Daten-Dashboards, KPIs, Vergleiche, Tabellen
+- Kontakt-/Deal-Karten mit CRM-Links
 - Charts und Diagramme (CSS/SVG-basiert)
-- Timelines und Checklisten
-- Jede andere Visualisierung die als HTML besser wirkt als Text
+- Interaktive Elemente, Rechner, Quizzes
+- Timelines, Checklisten, Bewertungen
+- Alles was visuell besser wirkt als Text
 
 ### Wann NICHT nutzen:
-- Einfache kurze Antworten (normaler Text reicht)
-- Einzelne Fakten oder Zahlen
+- Einfache kurze Antworten, einzelne Fakten
 - Wenn der User explizit Text möchte
 
-### Verfügbare CSS-Klassen (automatisch injiziert):
+### Verfügbare CSS-Klassen:
 
-**Layout:** `.grid`, `.cols-2`, `.cols-3`, `.cols-4`, `.flex`, `.flex-col`, `.items-center`, `.justify-between`, `.gap-1` bis `.gap-4`, `.p-2` bis `.p-6`, `.mt-1` bis `.mt-4`, `.mb-2`, `.mb-4`, `.w-full`
+**Layout:** `.grid .cols-2 .cols-3 .cols-4`, `.flex .flex-col .flex-wrap .items-center .items-start .justify-between .justify-center`, `.gap-1` bis `.gap-6`, `.p-2` bis `.p-8`, `.px-4 .py-2`, `.mt-1` bis `.mt-6`, `.mb-1` bis `.mb-6`, `.w-full`
 
-**Typography:** `.text-xs` bis `.text-4xl`, `.font-bold`, `.font-semibold`, `.font-medium`, `.text-primary`, `.text-success`, `.text-warning`, `.text-danger`, `.text-muted`, `.text-secondary`, `.mono`, `.truncate`
+**Typography:** `.text-xs/.sm/.base/.lg/.xl/.2xl/.3xl/.4xl`, `.font-bold/.semibold/.medium`, `.text-primary/.success/.warning/.danger/.muted/.secondary`, `.text-gradient` (Gradient-Text!), `.mono .truncate`, `.section-title` (Abschnitts-Überschrift mit Linie)
 
-**Cards:** `.card` (mit Shadow+Border), `.card-flat` (subtle), `.card-accent` (linke Akzent-Border)
+**Cards:** `.card` (Glassmorphism), `.card-flat`, `.card-accent` (linke Border), `.card-glass` (extra Blur), `.card-gradient` (primärer Gradient-Hintergrund, weißer Text)
 
 **KPI/Metrics:**
 ```html
 <div class="grid cols-3 gap-4">
-  <div class="kpi">
+  <div class="kpi animate-in animate-in-1">
     <div class="kpi-icon">📊</div>
     <div class="kpi-value">1.247</div>
     <div class="kpi-label">Kontakte</div>
     <div class="kpi-trend up">↑ 12%</div>
+  </div>
+  <div class="kpi animate-in animate-in-2">
+    <div class="kpi-icon">💰</div>
+    <div class="kpi-value">€84.500</div>
+    <div class="kpi-label">Pipeline</div>
+    <div class="kpi-trend up">↑ 23%</div>
+  </div>
+  <div class="kpi animate-in animate-in-3">
+    <div class="kpi-icon">🎯</div>
+    <div class="kpi-value">92%</div>
+    <div class="kpi-label">Abschlussrate</div>
+    <div class="kpi-trend down">↓ 3%</div>
   </div>
 </div>
 ```
@@ -450,50 +509,126 @@ Du hast ein mächtiges Tool `render_artifact` zur Verfügung, mit dem du interak
 ```html
 <div class="table-wrap">
   <table>
-    <thead><tr><th>Name</th><th>Status</th></tr></thead>
-    <tbody><tr><td>Max</td><td><span class="badge badge-success">Aktiv</span></td></tr></tbody>
+    <thead><tr><th>Name</th><th>Status</th><th>Wert</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Max Müller</strong><br><span class="text-xs text-muted">max@example.com</span></td><td><span class="badge badge-success badge-dot">Aktiv</span></td><td class="font-semibold">€12.500</td></tr>
+    </tbody>
   </table>
 </div>
 ```
 
-**Badges:** `.badge .badge-primary`, `.badge-success`, `.badge-warning`, `.badge-danger`, `.badge-info`, `.badge-neutral`
+**Badges:** `.badge .badge-primary/.success/.warning/.danger/.info/.neutral`, `.badge-dot` (mit farbigem Punkt)
 
-**Progress Bars:**
-```html
-<div class="progress-label"><span>Fortschritt</span><span>75%</span></div>
-<div class="progress"><div class="progress-bar" style="width:75%"></div></div>
-```
+**Score/Rating:** `.score-ring` (runder Score), `.score-ring.lg`, `.stars` (⭐-Bewertung)
 
-**Bar Charts (CSS-only):**
+**Progress:** `.progress` + `.progress-bar` (Gradient!), `.progress-lg`, `.progress-bar.success/.warning/.danger`
+
+**Stat Rows:** `.stat-row` > `.label` + `.value` (Key-Value Zeilen)
+
+**Bar Charts:**
 ```html
 <div class="bar-chart">
-  <div class="bar" style="height:80%"><span class="bar-value">80</span><span class="bar-label">Jan</span></div>
-  <div class="bar" style="height:60%"><span class="bar-value">60</span><span class="bar-label">Feb</span></div>
+  <div class="bar" style="height:85%"><span class="bar-value">85</span><span class="bar-label">Jan</span></div>
+  <div class="bar" style="height:62%"><span class="bar-value">62</span><span class="bar-label">Feb</span></div>
+  <div class="bar secondary" style="height:74%"><span class="bar-value">74</span><span class="bar-label">Mär</span></div>
 </div>
 ```
 
-**Timeline:**
-```html
-<div class="timeline">
-  <div class="timeline-item done"><div class="timeline-date">01.03.2026</div><strong>Schritt 1</strong></div>
-  <div class="timeline-item"><div class="timeline-date">15.03.2026</div><strong>Schritt 2</strong></div>
-</div>
-```
+**Timeline:** `.timeline` > `.timeline-item` (`.done`/`.pending`) > `.timeline-date` + content
 
-**Alerts:** `.alert .alert-info`, `.alert-success`, `.alert-warning`, `.alert-danger`
+**Alerts:** `.alert .alert-info/.success/.warning/.danger`
 **Lists:** `.list` > `.list-item` > `.list-icon` + `.list-content`
-**Tabs:** `.tabs` > `.tab` (+ `.active`)
+**Tabs:** `.tabs` > `.tab` (`.active`)
 **Tags:** `.tag`
 **Divider:** `<hr class="divider">`
-**Animations:** `.animate-in`, `.animate-in-1` bis `.animate-in-4` (gestaffelt)
+**Animations:** `.animate-in .animate-in-1` bis `.animate-in-5`, `.animate-slide`, `.animate-scale`
+**Utility:** `.rounded/.rounded-sm/.rounded-full`, `.shadow/.shadow-md/.shadow-lg`, `.border .border-b`, `.opacity-75/.opacity-50`
+
+### Gold-Standard Beispiel — SO soll ein Artifact aussehen:
+```html
+<meta charset="utf-8">
+<div class="p-4">
+  <div class="flex items-center justify-between mb-4 animate-in">
+    <div>
+      <h2 class="mb-1">📊 Verkaufs-Dashboard</h2>
+      <p class="text-sm text-muted">Übersicht Q1 2026 — Stand 24.03.</p>
+    </div>
+    <div class="score-ring">87</div>
+  </div>
+
+  <div class="grid cols-4 gap-4 mb-6">
+    <div class="kpi animate-in animate-in-1">
+      <div class="kpi-icon">💰</div>
+      <div class="kpi-value">€247.800</div>
+      <div class="kpi-label">Umsatz</div>
+      <div class="kpi-trend up">↑ 18%</div>
+    </div>
+    <div class="kpi animate-in animate-in-2">
+      <div class="kpi-icon">🤝</div>
+      <div class="kpi-value">34</div>
+      <div class="kpi-label">Abschlüsse</div>
+      <div class="kpi-trend up">↑ 6</div>
+    </div>
+    <div class="kpi animate-in animate-in-3">
+      <div class="kpi-icon">📞</div>
+      <div class="kpi-value">189</div>
+      <div class="kpi-label">Gespräche</div>
+      <div class="kpi-trend neutral">→ 0%</div>
+    </div>
+    <div class="kpi animate-in animate-in-4">
+      <div class="kpi-icon">⭐</div>
+      <div class="kpi-value">4.8</div>
+      <div class="kpi-label">Bewertung</div>
+      <div class="kpi-trend up">↑ 0.3</div>
+    </div>
+  </div>
+
+  <div class="grid cols-2 gap-4 mb-6">
+    <div class="card animate-in animate-in-3">
+      <div class="section-title">Umsatz pro Monat</div>
+      <div class="bar-chart">
+        <div class="bar" style="height:65%"><span class="bar-value">€68K</span><span class="bar-label">Jan</span></div>
+        <div class="bar" style="height:78%"><span class="bar-value">€82K</span><span class="bar-label">Feb</span></div>
+        <div class="bar" style="height:92%"><span class="bar-value">€98K</span><span class="bar-label">Mär</span></div>
+      </div>
+    </div>
+    <div class="card animate-in animate-in-4">
+      <div class="section-title">Pipeline-Status</div>
+      <div class="stat-row"><span class="label">Qualifiziert</span><span class="value">12 Deals</span></div>
+      <div class="stat-row"><span class="label">Verhandlung</span><span class="value">8 Deals</span></div>
+      <div class="stat-row"><span class="label">Abschluss</span><span class="value">5 Deals</span></div>
+      <div class="mt-3">
+        <div class="progress-label"><span>Pipeline-Ziel</span><span>78%</span></div>
+        <div class="progress progress-lg"><div class="progress-bar" style="width:78%"></div></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card animate-in animate-in-5">
+    <div class="section-title">Top Deals</div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Kunde</th><th>Deal</th><th>Wert</th><th>Status</th></tr></thead>
+        <tbody>
+          <tr><td><strong>Firma Alpha GmbH</strong><br><span class="text-xs text-muted">Kontakt: M. Schmidt</span></td><td>Enterprise Paket</td><td class="font-semibold">€45.000</td><td><span class="badge badge-success badge-dot">Gewonnen</span></td></tr>
+          <tr><td><strong>Beta Corp</strong><br><span class="text-xs text-muted">Kontakt: L. Weber</span></td><td>Premium Abo</td><td class="font-semibold">€28.500</td><td><span class="badge badge-warning badge-dot">Verhandlung</span></td></tr>
+          <tr><td><strong>Gamma AG</strong><br><span class="text-xs text-muted">Kontakt: S. Fischer</span></td><td>Starter Plan</td><td class="font-semibold">€12.000</td><td><span class="badge badge-info badge-dot">Qualifiziert</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+```
 
 ### Wichtige Regeln:
-- Hintergrund ist TRANSPARENT — das Artifact fügt sich nahtlos in den Chat ein
-- Dark-Mode wird automatisch unterstützt via CSS Custom Properties
-- Für CRM-Links: `<a href="/crm/contacts/{id}" target="_top">`
-- Branding-Farben (--primary, --secondary, --accent) werden automatisch injiziert
+- Hintergrund ist TRANSPARENT — fügt sich nahtlos in den Chat ein
+- Dark-Mode wird automatisch via CSS Custom Properties unterstützt
+- CRM-Links: `<a href="/crm/contacts/{id}" target="_top">`
+- Branding-Farben werden automatisch injiziert (kein manuelles Setzen nötig)
+- Nutze `.animate-in` mit gestaffelten Delays für elegante Einblend-Effekte
+- Nutze `.section-title` für Abschnittsüberschriften
+- Nutze `.text-gradient` für hervorgehobenen Text
 - Du kannst zusätzliches `<style>` und `<script>` hinzufügen wenn nötig
-- Nutze `<meta charset="utf-8">` im HTML
 """
 
 
