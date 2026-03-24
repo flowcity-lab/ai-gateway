@@ -349,7 +349,7 @@ async def stream_chat_generator(data: ChatRequest):
             )
 
         messages = build_messages(data, rag_context=rag_context)
-        tools = build_tools(data.tool_definitions, data.skills) if data.skills else None
+        tools = build_tools(data.tool_definitions, data.skills)
         max_iterations = 5
 
         # Tool-Call-Loop (nicht-gestreamt — nur finale Antwort wird gestreamt)
@@ -534,7 +534,7 @@ def chat_pipeline_sync(data: ChatRequest) -> dict:
             log.info("Chat %d [sync]: %d RAG-Chunks gefunden", data.chat_id, len(rag_context))
 
         messages = build_messages(data, rag_context=rag_context)
-        tools = build_tools(data.tool_definitions, data.skills) if data.skills else None
+        tools = build_tools(data.tool_definitions, data.skills)
         model = get_model_name(data.model)
         all_tool_calls = []
         all_tool_results = []
@@ -691,7 +691,7 @@ def chat_pipeline(data: ChatRequest):
         messages = build_messages(data, rag_context=rag_context)
 
         # 2. Tool-Definitionen (OpenAI Function Calling Format)
-        tools = build_tools(data.tool_definitions, data.skills) if data.skills else None
+        tools = build_tools(data.tool_definitions, data.skills)
 
         # 3. LLM-Call (mit Tool-Call-Loop)
         model = get_model_name(data.model)
@@ -955,42 +955,39 @@ def build_tools(tool_definitions: list = None, skill_slugs: list = None, include
                  len(tool_definitions),
                  [t.get("function", {}).get("name") for t in tool_definitions])
         tools = list(tool_definitions)
+    else:
+        # Fallback: Von Laravel per HTTP holen (nur wenn LARAVEL_SKILL_URL gesetzt)
+        log.info("build_tools: Keine tool_definitions im Payload, versuche LARAVEL_SKILL_URL")
+        try:
+            skill_url = LARAVEL_SKILL_URL
+            if not skill_url:
+                log.info("build_tools: LARAVEL_SKILL_URL ist leer — nur render_artifact verfügbar")
+            else:
+                slugs = skill_slugs or []
+                log.info("build_tools: Lade Skill-Definitionen von %s (skills: %s)", skill_url, slugs)
+                with httpx.Client(timeout=10) as client:
+                    resp = client.get(
+                        skill_url,
+                        headers={"Authorization": f"Bearer {AI_GATEWAY_SECRET}"},
+                        params={"skills": ",".join(slugs)},
+                    )
+                    if resp.status_code != 200:
+                        log.warning("Skill-Definitionen laden fehlgeschlagen: %d — %s", resp.status_code, resp.text[:500])
+                    else:
+                        skills_data = resp.json()
+                        for skill in skills_data.get("skills", []):
+                            tools.append({
+                                "type": "function",
+                                "function": {
+                                    "name": skill["name"],
+                                    "description": skill["description"],
+                                    "parameters": skill.get("parameters", {"type": "object", "properties": {}}),
+                                },
+                            })
+                        log.info("build_tools: %d Tools via HTTP geladen", len(tools))
 
-    # Fallback: Von Laravel per HTTP holen (nur wenn LARAVEL_SKILL_URL gesetzt)
-    log.info("build_tools: Keine tool_definitions im Payload, versuche LARAVEL_SKILL_URL")
-    try:
-        skill_url = LARAVEL_SKILL_URL
-        if not skill_url:
-            log.warning("build_tools: LARAVEL_SKILL_URL ist leer — keine Tools verfügbar")
-            return []
-
-        slugs = skill_slugs or []
-        log.info("build_tools: Lade Skill-Definitionen von %s (skills: %s)", skill_url, slugs)
-        with httpx.Client(timeout=10) as client:
-            resp = client.get(
-                skill_url,
-                headers={"Authorization": f"Bearer {AI_GATEWAY_SECRET}"},
-                params={"skills": ",".join(slugs)},
-            )
-            if resp.status_code != 200:
-                log.warning("Skill-Definitionen laden fehlgeschlagen: %d — %s", resp.status_code, resp.text[:500])
-                return []
-
-            skills_data = resp.json()
-            tools = []
-            for skill in skills_data.get("skills", []):
-                tools.append({
-                    "type": "function",
-                    "function": {
-                        "name": skill["name"],
-                        "description": skill["description"],
-                        "parameters": skill.get("parameters", {"type": "object", "properties": {}}),
-                    },
-                })
-            log.info("build_tools: %d Tools via HTTP geladen", len(tools))
-
-    except Exception as e:
-        log.error("Skill-Definitionen laden Fehler: %s", str(e))
+        except Exception as e:
+            log.error("Skill-Definitionen laden Fehler: %s", str(e))
 
     # render_artifact immer anhängen (universeller HTML-Visualizer)
     if include_artifact:
@@ -1265,7 +1262,7 @@ def task_pipeline(data: TaskExecuteRequest):
         system_prompt = _build_task_system_prompt(data, rag_context)
 
         # Tools vorbereiten
-        tools = build_tools(data.tool_definitions, data.skills) if data.skills else None
+        tools = build_tools(data.tool_definitions, data.skills)
 
         # Messages für die Schleife
         messages = [
