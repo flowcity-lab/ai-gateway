@@ -8,6 +8,7 @@ import os
 import time
 import json
 import uuid
+import base64
 import logging
 import asyncio
 from contextlib import asynccontextmanager
@@ -287,6 +288,10 @@ async def stream_chat_generator(data: ChatRequest):
                         result = execute_skill(tool_name, tool_args, data.user_id, data.chat_id)
                         all_tool_results.append({"tool_call_id": tc.id, "name": tool_name, "result": result})
 
+                        # Base64-Daten entfernen bevor sie an GPT gehen (zu groß)
+                        result.pop("_image_b64", None)
+                        result.pop("_pdf_b64", None)
+
                         messages.append({
                             "role": "tool",
                             "tool_call_id": tc.id,
@@ -394,6 +399,7 @@ def chat_pipeline_sync(data: ChatRequest) -> dict:
         all_tool_calls = []
         all_tool_results = []
         pending_images = []
+        pending_pdfs = []
         max_iterations = 5
 
         for iteration in range(max_iterations):
@@ -436,6 +442,15 @@ def chat_pipeline_sync(data: ChatRequest) -> dict:
                         "model": result.get("model", "gpt-image-1"),
                     })
 
+                # Base64-PDF-Daten extrahieren und separat sammeln
+                pdf_b64 = result.pop("_pdf_b64", None)
+                if pdf_b64:
+                    pending_pdfs.append({
+                        "pdf_b64": pdf_b64,
+                        "title": result.get("title", "Dokument"),
+                        "size_bytes": result.get("size_bytes", 0),
+                    })
+
                 messages.append({
                     "role": "tool",
                     "tool_call_id": tc.id,
@@ -467,6 +482,11 @@ def chat_pipeline_sync(data: ChatRequest) -> dict:
             resp["pending_images"] = pending_images
             log.info("Chat %d [sync]: %d Bilder in Response (pending_images)",
                      data.chat_id, len(pending_images))
+
+        if pending_pdfs:
+            resp["pending_pdfs"] = pending_pdfs
+            log.info("Chat %d [sync]: %d PDFs in Response (pending_pdfs)",
+                     data.chat_id, len(pending_pdfs))
 
         return resp
 
@@ -558,6 +578,10 @@ def chat_pipeline(data: ChatRequest):
                     "name": tool_name,
                     "result": result,
                 })
+
+                # Base64-Daten entfernen bevor sie an GPT gehen (zu groß)
+                result.pop("_image_b64", None)
+                result.pop("_pdf_b64", None)
 
                 # Tool-Result als Message für nächste Iteration
                 messages.append({
@@ -774,6 +798,8 @@ def execute_skill(skill_name: str, params: dict, user_id: int, chat_id: int = 0)
     # Gateway-intercepted Skills
     if skill_name == "image_generate":
         return generate_image(params, user_id, chat_id)
+    if skill_name == "pdf_generate":
+        return generate_pdf(params, user_id, chat_id)
 
     try:
         skill_url = LARAVEL_SKILL_URL
@@ -858,6 +884,51 @@ def generate_image(params: dict, user_id: int, chat_id: int) -> dict:
     except Exception as e:
         log.error("Bildgenerierung Fehler: %s", str(e))
         return {"error": f"Bildgenerierung fehlgeschlagen: {str(e)}"}
+
+
+# ── Helper: PDF-Generierung (Gateway-intercepted) ───────────────────
+
+def generate_pdf(params: dict, user_id: int, chat_id: int) -> dict:
+    """
+    Generiert ein PDF aus HTML via WeasyPrint.
+    Gibt die Base64-PDF-Daten im Result zurück (unter '_pdf_b64').
+    Die sync/stream pipeline sammelt diese und gibt sie als 'pending_pdfs'
+    in der Response an Laravel zurück, damit Laravel das PDF lokal speichert.
+    """
+    title = params.get("title", "Dokument")
+    html_content = params.get("html_content", "")
+
+    if not html_content:
+        return {"error": "Kein HTML-Content angegeben"}
+
+    try:
+        import weasyprint
+
+        log.info("PDF-Generierung: title='%s', html_length=%d", title[:80], len(html_content))
+
+        # WeasyPrint: HTML → PDF (A4 ist Standard)
+        html_doc = weasyprint.HTML(string=html_content)
+        pdf_bytes = html_doc.write_pdf()
+
+        if not pdf_bytes:
+            return {"error": "PDF-Generierung fehlgeschlagen — keine Daten"}
+
+        # PDF → Base64
+        pdf_b64 = base64.b64encode(pdf_bytes).decode("utf-8")
+
+        log.info("PDF generiert: %d bytes (%d bytes Base64)", len(pdf_bytes), len(pdf_b64))
+
+        return {
+            "status": "success",
+            "_pdf_b64": pdf_b64,
+            "title": title,
+            "size_bytes": len(pdf_bytes),
+            "message": f"PDF '{title}' wurde erfolgreich generiert.",
+        }
+
+    except Exception as e:
+        log.error("PDF-Generierung Fehler: %s", str(e))
+        return {"error": f"PDF-Generierung fehlgeschlagen: {str(e)}"}
 
 
 # ── Helper: Callback an Laravel ──────────────────────────────────────
