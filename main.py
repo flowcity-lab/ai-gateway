@@ -304,11 +304,11 @@ td .flex{gap:0.5rem}
 
 /* ─── Charts (CSS-only Bars) — Enhanced ─── */
 .bar-chart{display:flex;align-items:flex-end;gap:0.5rem;height:180px;padding:1.5rem 0 1.5rem 0;border-bottom:1px solid var(--border)}
-.bar{flex:1;border-radius:var(--radius-xs) var(--radius-xs) 0 0;min-width:20px;position:relative;transition:all 0.5s cubic-bezier(.4,0,.2,1);background:var(--gradient)}
-.bar:hover{filter:brightness(1.1);transform:scaleY(1.02);transform-origin:bottom}
+.bar{flex:1;border-radius:var(--radius-xs) var(--radius-xs) 0 0;min-width:20px;position:relative;transition:filter 0.3s,box-shadow 0.3s;background:var(--gradient)}
+.bar:hover{filter:brightness(1.1);box-shadow:0 -4px 12px rgba(99,102,241,0.2)}
 .bar-label{position:absolute;bottom:-1.5rem;left:50%;transform:translateX(-50%);font-size:0.65rem;color:var(--text-muted);white-space:nowrap;font-weight:500}
 .bar-value{position:absolute;top:-1.4rem;left:50%;transform:translateX(-50%);font-size:0.7rem;font-weight:700;color:var(--text)}
-.bar.secondary{background:var(--secondary)}.bar.success{background:var(--success)}.bar.info{background:var(--info)}.bar.warning{background:var(--warning)}.bar.danger{background:var(--danger)}
+.bar.secondary{background:var(--secondary)}.bar.accent{background:var(--accent)}.bar.success{background:var(--success)}.bar.info{background:var(--info)}.bar.warning{background:var(--warning)}.bar.danger{background:var(--danger)}
 
 /* ─── Donut Chart (SVG helper) ─── */
 .donut-chart{position:relative;display:inline-flex;align-items:center;justify-content:center}
@@ -327,7 +327,16 @@ td .flex{gap:0.5rem}
 /* ─── Score / Rating ─── */
 .score-ring{width:64px;height:64px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:1.25rem;font-weight:800;color:#fff;background:var(--gradient);box-shadow:var(--shadow-glow)}
 .score-ring.lg{width:80px;height:80px;font-size:1.5rem}
+.score-ring.accent{background:linear-gradient(135deg,var(--accent),var(--warning))}
 .stars{color:var(--accent);letter-spacing:2px;font-size:1.1rem}
+
+/* ─── Accent Highlights ─── */
+.accent-bar{height:3px;background:linear-gradient(90deg,var(--accent),var(--primary));border-radius:2px;margin:0.75rem 0}
+.badge-accent{background:rgba(245,158,11,0.12);color:var(--accent);font-weight:600}
+.card-accent-top{position:relative;overflow:hidden}.card-accent-top::before{content:'';position:absolute;top:0;left:0;right:0;height:3px;background:linear-gradient(90deg,var(--accent),var(--primary))}
+.kpi.accent::before{background:linear-gradient(90deg,var(--accent),var(--primary))}
+.text-accent{color:var(--accent)}
+.highlight{background:linear-gradient(120deg,rgba(245,158,11,0.1) 0%,rgba(245,158,11,0.05) 100%);padding:0.75rem 1rem;border-radius:var(--radius-sm);border-left:3px solid var(--accent)}
 
 /* ─── Stat Highlight Row ─── */
 .stat-row{display:flex;align-items:center;justify-content:space-between;padding:0.6rem 0;border-bottom:1px solid var(--border)}
@@ -335,16 +344,27 @@ td .flex{gap:0.5rem}
 .stat-row .label{font-size:0.85rem;color:var(--text-secondary)}
 .stat-row .value{font-size:0.95rem;font-weight:700;color:var(--text)}
 
-/* ─── Animations — Refined ─── */
-@keyframes fadeIn{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
-@keyframes slideIn{from{opacity:0;transform:translateX(-8px)}to{opacity:1;transform:translateX(0)}}
-@keyframes scaleIn{from{opacity:0;transform:scale(0.95)}to{opacity:1;transform:scale(1)}}
+/* ─── Animations — Premium ─── */
+@keyframes fadeIn{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}
+@keyframes slideIn{from{opacity:0;transform:translateX(-12px)}to{opacity:1;transform:translateX(0)}}
+@keyframes slideUp{from{opacity:0;transform:translateY(20px)}to{opacity:1;transform:translateY(0)}}
+@keyframes scaleIn{from{opacity:0;transform:scale(0.92)}to{opacity:1;transform:scale(1)}}
 @keyframes shimmer{0%{background-position:-200% 0}100%{background-position:200% 0}}
-.animate-in{animation:fadeIn 0.45s cubic-bezier(.4,0,.2,1) both}
-.animate-in-1{animation-delay:0.06s}.animate-in-2{animation-delay:0.12s}.animate-in-3{animation-delay:0.18s}.animate-in-4{animation-delay:0.24s}.animate-in-5{animation-delay:0.3s}
-.animate-slide{animation:slideIn 0.4s cubic-bezier(.4,0,.2,1) both}
-.animate-scale{animation:scaleIn 0.35s cubic-bezier(.4,0,.2,1) both}
-.kpi-value{animation:fadeIn 0.5s cubic-bezier(.4,0,.2,1) both}
+@keyframes countUp{from{opacity:0;transform:translateY(8px) scale(0.95)}to{opacity:1;transform:translateY(0) scale(1)}}
+@keyframes glowPulse{0%,100%{box-shadow:var(--shadow-glow)}50%{box-shadow:0 0 28px rgba(99,102,241,0.25)}}
+@keyframes barGrow{from{transform:scaleY(0)}to{transform:scaleY(1)}}
+@keyframes progressFill{from{width:0}}
+.animate-in{animation:fadeIn 0.55s cubic-bezier(.22,1,.36,1) both}
+.animate-in-1{animation-delay:0.08s}.animate-in-2{animation-delay:0.16s}.animate-in-3{animation-delay:0.24s}.animate-in-4{animation-delay:0.32s}.animate-in-5{animation-delay:0.4s}.animate-in-6{animation-delay:0.48s}.animate-in-7{animation-delay:0.56s}
+.animate-slide{animation:slideIn 0.5s cubic-bezier(.22,1,.36,1) both}
+.animate-slide-up{animation:slideUp 0.6s cubic-bezier(.22,1,.36,1) both}
+.animate-scale{animation:scaleIn 0.45s cubic-bezier(.22,1,.36,1) both}
+.animate-glow{animation:glowPulse 2s ease-in-out 0.5s 2}
+.kpi-value{animation:countUp 0.6s cubic-bezier(.22,1,.36,1) both}
+.bar{transform-origin:bottom;animation:barGrow 0.7s cubic-bezier(.22,1,.36,1) both}
+.bar:nth-child(1){animation-delay:0.1s}.bar:nth-child(2){animation-delay:0.2s}.bar:nth-child(3){animation-delay:0.3s}.bar:nth-child(4){animation-delay:0.4s}.bar:nth-child(5){animation-delay:0.5s}.bar:nth-child(6){animation-delay:0.6s}
+.progress-bar{animation:progressFill 1s cubic-bezier(.22,1,.36,1) both;animation-delay:0.3s}
+.score-ring{animation:scaleIn 0.5s cubic-bezier(.22,1,.36,1) both, glowPulse 2s ease-in-out 0.8s 2}
 
 /* ─── Utility Decorators ─── */
 .rounded{border-radius:var(--radius)}.rounded-sm{border-radius:var(--radius-sm)}.rounded-full{border-radius:999px}
@@ -577,7 +597,8 @@ Du hast das Tool `render_artifact` zur Verfügung, mit dem du interaktive HTML-V
 **Tabs:** `.tabs` > `.tab` (`.active`)
 **Tags:** `.tag`
 **Divider:** `<hr class="divider">`
-**Animations:** `.animate-in .animate-in-1` bis `.animate-in-5`, `.animate-slide`, `.animate-scale`
+**Animations:** `.animate-in .animate-in-1` bis `.animate-in-7` (IMMER verwenden!), `.animate-slide`, `.animate-slide-up`, `.animate-scale`, `.animate-glow` — Bars/Progress/Score-Ring animieren automatisch
+**Accent:** `.text-accent`, `.badge-accent`, `.bar.accent`, `.kpi.accent`, `.highlight`, `.accent-bar`, `.card-accent-top`, `.score-ring.accent`
 **Utility:** `.rounded/.rounded-sm/.rounded-full`, `.shadow/.shadow-md/.shadow-lg`, `.border .border-b`, `.opacity-75/.opacity-50`
 
 ### Gold-Standard Beispiel — SO soll ein Artifact aussehen:
@@ -666,10 +687,27 @@ Du hast das Tool `render_artifact` zur Verfügung, mit dem du interaktive HTML-V
 - Nutze `.text-gradient` für hervorgehobenen Text
 - Du kannst zusätzliches `<style>` und `<script>` hinzufügen wenn nötig
 
-### ⛔ KEINE sinnlosen interaktiven Elemente:
-- Verwende KEINE `<input type="range">`, `<input type="number">`, `<select>` oder ähnliche Form-Elemente AUSSER sie haben funktionales JavaScript das tatsächlich etwas auf der Seite verändert (z.B. einen Wert berechnet, ein Ergebnis filtert, eine Visualisierung aktualisiert).
-- Ein Schieberegler der nichts tut ist schlimmer als keiner. Bevorzuge statische, hochwertige Darstellungen (Score-Rings, Progress-Bars, Badges) über nutzlose Inputs.
-- Interaktive Elemente sind NUR erlaubt wenn der JavaScript-Code dabei ist der sie funktional macht.
+### 🎯 Interaktivität — FUNKTIONAL und MÄCHTIG:
+- Du SOLLST interaktive Elemente einbauen wenn sie Sinn ergeben — aber sie MÜSSEN mit `<script>` funktional gemacht werden.
+- Beispiele für gute Interaktivität: Tabs die Inhalte umschalten, Filter-Buttons die Tabellenzeilen filtern, Schieberegler die Berechnungen live aktualisieren, Sortier-Buttons für Tabellen, Toggle zwischen Ansichten.
+- Ein `<input type="range">` ist großartig WENN ein `<script>` dafür sorgt dass sich z.B. ein Wert, Chart oder Ergebnis live aktualisiert.
+- Füge IMMER den `<script>`-Block am Ende hinzu der die Interaktivität implementiert.
+- Nutze `document.querySelectorAll`, `addEventListener`, und DOM-Manipulation für die Logik.
+- Interaktive Elemente sollten visuell ansprechend gestylt sein (nutze die CSS-Klassen).
+
+### ✨ Animationen — IMMER verwenden:
+- Nutze `.animate-in` mit `.animate-in-1` bis `.animate-in-7` für gestaffelte Einblend-Effekte auf JEDEM sichtbaren Element.
+- Der Score-Ring animiert automatisch mit Glow-Pulse.
+- Bar-Charts wachsen automatisch von unten nach oben.
+- Progress-Bars füllen sich automatisch.
+- Nutze `.animate-slide-up` für größere Abschnitte.
+- Nutze `.animate-scale` für Score-Rings und Icons.
+- JEDES Dashboard muss beim Laden elegant animiert erscheinen.
+
+### 🎨 Akzentfarbe (`--accent`):
+- Nutze `.text-accent`, `.badge-accent`, `.bar.accent`, `.kpi.accent`, `.highlight`, `.accent-bar` um die Akzentfarbe einzubinden.
+- Die Akzentfarbe eignet sich für: Highlights, sekundäre Datenreihen in Charts, besondere Badges, Calls-to-Action, Warnungen/Hinweise.
+- Mische Primary- und Accent-Farben für visuell reichhaltige Dashboards.
 """
 
 
