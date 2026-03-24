@@ -678,11 +678,14 @@ def build_tools(skill_slugs: list) -> list:
     Baut OpenAI Function Calling Tool-Definitionen.
     Holt die Skill-Definitionen von Laravel.
     """
+    log.info("build_tools aufgerufen mit skills: %s", skill_slugs)
     try:
         skill_url = LARAVEL_SKILL_URL
         if not skill_url:
+            log.warning("build_tools: LARAVEL_SKILL_URL ist leer — keine Tools verfügbar")
             return []
 
+        log.info("build_tools: Lade Skill-Definitionen von %s", skill_url)
         with httpx.Client(timeout=10) as client:
             resp = client.get(
                 skill_url,
@@ -690,10 +693,13 @@ def build_tools(skill_slugs: list) -> list:
                 params={"skills": ",".join(skill_slugs)},
             )
             if resp.status_code != 200:
-                log.warning("Skill-Definitionen laden fehlgeschlagen: %d", resp.status_code)
+                log.warning("Skill-Definitionen laden fehlgeschlagen: %d — %s", resp.status_code, resp.text[:500])
                 return []
 
             skills_data = resp.json()
+            log.info("build_tools: Laravel liefert %d Skills: %s",
+                     len(skills_data.get("skills", [])),
+                     [s.get("name") for s in skills_data.get("skills", [])])
             tools = []
             for skill in skills_data.get("skills", []):
                 tools.append({
@@ -704,6 +710,7 @@ def build_tools(skill_slugs: list) -> list:
                         "parameters": skill.get("parameters", {"type": "object", "properties": {}}),
                     },
                 })
+            log.info("build_tools: %d Tools gebaut", len(tools))
             return tools
 
     except Exception as e:
