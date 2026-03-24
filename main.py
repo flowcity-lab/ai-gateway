@@ -282,7 +282,7 @@ async def stream_chat_generator(data: ChatRequest):
                         yield f"event: status\ndata: {json.dumps({'tool': tool_name})}\n\n"
 
                         all_tool_calls.append({"id": tc.id, "name": tool_name, "arguments": tool_args})
-                        result = execute_skill(tool_name, tool_args, data.user_id)
+                        result = execute_skill(tool_name, tool_args, data.user_id, data.chat_id)
                         all_tool_results.append({"tool_call_id": tc.id, "name": tool_name, "result": result})
 
                         messages.append({
@@ -418,7 +418,7 @@ def chat_pipeline_sync(data: ChatRequest) -> dict:
                 log.info("Chat %d [sync]: Tool-Call → %s(%s)", data.chat_id, tool_name, tool_args)
 
                 all_tool_calls.append({"id": tc.id, "name": tool_name, "arguments": tool_args})
-                result = execute_skill(tool_name, tool_args, data.user_id)
+                result = execute_skill(tool_name, tool_args, data.user_id, data.chat_id)
                 all_tool_results.append({"tool_call_id": tc.id, "name": tool_name, "result": result})
 
                 messages.append({
@@ -530,7 +530,7 @@ def chat_pipeline(data: ChatRequest):
                 })
 
                 # Skill bei Laravel ausführen
-                result = execute_skill(tool_name, tool_args, data.user_id)
+                result = execute_skill(tool_name, tool_args, data.user_id, data.chat_id)
                 all_tool_results.append({
                     "tool_call_id": tc.id,
                     "name": tool_name,
@@ -713,8 +713,15 @@ def build_tools(skill_slugs: list) -> list:
 
 # ── Helper: Skill bei Laravel ausführen ──────────────────────────────
 
-def execute_skill(skill_name: str, params: dict, user_id: int) -> dict:
-    """Sendet Tool-Call an Laravel /api/ai/skills."""
+def execute_skill(skill_name: str, params: dict, user_id: int, chat_id: int = 0) -> dict:
+    """
+    Sendet Tool-Call an Laravel /api/ai/skills.
+    Einige Skills (z.B. image_generate) werden direkt im Gateway ausgeführt.
+    """
+    # Gateway-intercepted Skills
+    if skill_name == "image_generate":
+        return generate_image(params, user_id, chat_id)
+
     try:
         skill_url = LARAVEL_SKILL_URL
         if not skill_url:
@@ -739,6 +746,96 @@ def execute_skill(skill_name: str, params: dict, user_id: int) -> dict:
     except Exception as e:
         log.error("Skill %s Fehler: %s", skill_name, str(e))
         return {"error": str(e)}
+
+
+# ── Helper: Bildgenerierung (Gateway-intercepted) ────────────────────
+
+def generate_image(params: dict, user_id: int, chat_id: int) -> dict:
+    """
+    Generiert ein Bild über OpenAI gpt-image-1 und speichert es über Laravel.
+    Wird direkt im Gateway ausgeführt (nicht an Laravel Skill-Controller gesendet),
+    weil der Gateway die OpenAI API Keys hat.
+    """
+    prompt = params.get("prompt", "")
+    size = params.get("size", "1024x1024")
+    quality = params.get("quality", "medium")
+    background = params.get("background", "auto")
+
+    if not prompt:
+        return {"error": "Kein Prompt angegeben"}
+
+    try:
+        log.info("Bildgenerierung: prompt='%s', size=%s, quality=%s", prompt[:80], size, quality)
+
+        # OpenAI Images API aufrufen (output_format=b64_json für permanente Speicherung)
+        image_response = oai_client.images.generate(
+            model="gpt-image-1",
+            prompt=prompt,
+            size=size,
+            quality=quality,
+            background=background,
+            output_format="b64_json",
+            n=1,
+        )
+
+        # Base64-Daten aus der Response extrahieren
+        image_b64 = image_response.data[0].b64_json
+
+        if not image_b64:
+            return {"error": "Keine Bilddaten von OpenAI erhalten"}
+
+        # Bild an Laravel senden zum Speichern
+        image_save_url = _get_image_save_url()
+        if not image_save_url:
+            return {"error": "Keine LARAVEL_CALLBACK_URL konfiguriert für Bildspeicherung"}
+
+        with httpx.Client(timeout=60) as client:
+            resp = client.post(
+                image_save_url,
+                json={
+                    "user_id": user_id,
+                    "chat_id": chat_id,
+                    "image_b64": image_b64,
+                    "prompt": prompt[:2000],
+                    "size": size,
+                    "quality": quality,
+                    "model": "gpt-image-1",
+                },
+                headers={"Authorization": f"Bearer {AI_GATEWAY_SECRET}"},
+            )
+
+            if resp.status_code != 200:
+                log.warning("Bild speichern fehlgeschlagen: %d — %s", resp.status_code, resp.text)
+                return {"error": f"Bild konnte nicht gespeichert werden: HTTP {resp.status_code}"}
+
+            result = resp.json()
+            image_url = result.get("url", "")
+
+        log.info("Bild generiert und gespeichert: %s", image_url)
+
+        return {
+            "status": "success",
+            "image_url": image_url,
+            "prompt": prompt,
+            "size": size,
+            "quality": quality,
+            "message": f"Bild wurde erfolgreich generiert und gespeichert.",
+        }
+
+    except openai.BadRequestError as e:
+        log.warning("Bildgenerierung abgelehnt: %s", str(e))
+        return {"error": f"Bildgenerierung wurde abgelehnt (Content Policy): {str(e)}"}
+    except Exception as e:
+        log.error("Bildgenerierung Fehler: %s", str(e))
+        return {"error": f"Bildgenerierung fehlgeschlagen: {str(e)}"}
+
+
+def _get_image_save_url() -> str:
+    """Leitet die Image-Save-URL aus LARAVEL_CALLBACK_URL ab."""
+    if not LARAVEL_CALLBACK_URL:
+        return ""
+    # /api/ai/callback → /api/ai/image-save
+    return LARAVEL_CALLBACK_URL.rsplit("/callback", 1)[0] + "/image-save"
 
 
 # ── Helper: Callback an Laravel ──────────────────────────────────────
