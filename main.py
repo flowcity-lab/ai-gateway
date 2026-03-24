@@ -159,31 +159,243 @@ def get_skill_label(skill_name: str) -> dict:
 
 # ── Artifact-System (Universal HTML Visualizer) ──────────────────────
 
+# ── Artifact Design System CSS ───────────────────────────────────────
+# Wird automatisch in jedes Artifact injiziert. GPT schreibt nur semantisches HTML
+# mit diesen Klassen — das CSS macht den Rest. Branding-Variablen (--primary etc.)
+# werden dynamisch vom Gateway mit den Trainer-Farben befüllt.
+ARTIFACT_BASE_CSS = """
+/* ─── Artifact Design System v1.0 ─── */
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --primary:#6366f1;--primary-light:#818cf8;--primary-dark:#4f46e5;
+  --secondary:#8b5cf6;--accent:#f59e0b;
+  --success:#10b981;--warning:#f59e0b;--danger:#ef4444;--info:#3b82f6;
+  --bg:transparent;--bg-card:rgba(255,255,255,0.6);--bg-subtle:rgba(0,0,0,0.02);
+  --text:#1e293b;--text-secondary:#64748b;--text-muted:#94a3b8;
+  --border:rgba(0,0,0,0.08);--border-strong:rgba(0,0,0,0.15);
+  --radius:12px;--radius-sm:8px;--radius-xs:6px;
+  --shadow:0 1px 3px rgba(0,0,0,0.06),0 1px 2px rgba(0,0,0,0.04);
+  --shadow-md:0 4px 12px rgba(0,0,0,0.08);
+  --font:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;
+  --font-mono:'SF Mono',SFMono-Regular,Menlo,Consolas,monospace;
+  --transition:0.2s ease;
+}
+@media(prefers-color-scheme:dark){
+  :root{
+    --bg:transparent;--bg-card:rgba(30,30,46,0.7);--bg-subtle:rgba(255,255,255,0.04);
+    --text:#e2e8f0;--text-secondary:#94a3b8;--text-muted:#64748b;
+    --border:rgba(255,255,255,0.08);--border-strong:rgba(255,255,255,0.15);
+    --shadow:0 1px 3px rgba(0,0,0,0.3);--shadow-md:0 4px 12px rgba(0,0,0,0.4);
+  }
+}
+body{background:var(--bg);color:var(--text);font-family:var(--font);font-size:14px;line-height:1.6;padding:0;margin:0}
+a{color:var(--primary);text-decoration:none}a:hover{text-decoration:underline}
+
+/* ─── Layout Utilities ─── */
+.grid{display:grid;gap:1rem}.cols-2{grid-template-columns:repeat(2,1fr)}.cols-3{grid-template-columns:repeat(3,1fr)}.cols-4{grid-template-columns:repeat(4,1fr)}
+.flex{display:flex}.flex-col{flex-direction:column}.items-center{align-items:center}.justify-between{justify-content:space-between}.gap-1{gap:0.25rem}.gap-2{gap:0.5rem}.gap-3{gap:0.75rem}.gap-4{gap:1rem}
+.p-2{padding:0.5rem}.p-3{padding:0.75rem}.p-4{padding:1rem}.p-5{padding:1.25rem}.p-6{padding:1.5rem}
+.mt-1{margin-top:0.25rem}.mt-2{margin-top:0.5rem}.mt-3{margin-top:0.75rem}.mt-4{margin-top:1rem}.mb-2{margin-bottom:0.5rem}.mb-4{margin-bottom:1rem}
+.w-full{width:100%}.text-center{text-align:center}.text-right{text-align:right}.text-left{text-align:left}
+.hidden{display:none}.block{display:block}.inline{display:inline}.inline-block{display:inline-block}
+.overflow-auto{overflow:auto}.overflow-hidden{overflow:hidden}
+.relative{position:relative}.absolute{position:absolute}
+@media(max-width:640px){.cols-2,.cols-3,.cols-4{grid-template-columns:1fr}}
+
+/* ─── Typography ─── */
+h1,h2,h3,h4{font-weight:700;color:var(--text);line-height:1.3}
+h1{font-size:1.5rem;margin-bottom:0.75rem}h2{font-size:1.25rem;margin-bottom:0.5rem}h3{font-size:1.1rem;margin-bottom:0.5rem}h4{font-size:1rem}
+.text-xs{font-size:0.75rem}.text-sm{font-size:0.875rem}.text-base{font-size:1rem}.text-lg{font-size:1.125rem}.text-xl{font-size:1.25rem}.text-2xl{font-size:1.5rem}.text-3xl{font-size:1.875rem}.text-4xl{font-size:2.25rem}
+.font-bold{font-weight:700}.font-semibold{font-weight:600}.font-medium{font-weight:500}.font-normal{font-weight:400}
+.text-primary{color:var(--primary)}.text-success{color:var(--success)}.text-warning{color:var(--warning)}.text-danger{color:var(--danger)}.text-muted{color:var(--text-muted)}.text-secondary{color:var(--text-secondary)}
+.mono{font-family:var(--font-mono)}
+.truncate{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.leading-tight{line-height:1.25}.leading-relaxed{line-height:1.75}
+
+/* ─── Cards ─── */
+.card{background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);padding:1.25rem;box-shadow:var(--shadow);transition:var(--transition)}
+.card:hover{box-shadow:var(--shadow-md)}
+.card-flat{background:var(--bg-subtle);border:1px solid var(--border);border-radius:var(--radius);padding:1.25rem}
+.card-accent{border-left:4px solid var(--primary);background:var(--bg-card);border-radius:var(--radius);padding:1.25rem;box-shadow:var(--shadow)}
+
+/* ─── KPI / Metric Cards ─── */
+.kpi{background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);padding:1.25rem;text-align:center;box-shadow:var(--shadow);transition:var(--transition)}
+.kpi:hover{box-shadow:var(--shadow-md);transform:translateY(-1px)}
+.kpi-value{font-size:2rem;font-weight:800;color:var(--primary);line-height:1.1}
+.kpi-label{font-size:0.8rem;color:var(--text-secondary);margin-top:0.25rem;text-transform:uppercase;letter-spacing:0.05em;font-weight:600}
+.kpi-trend{font-size:0.8rem;margin-top:0.5rem;font-weight:600}
+.kpi-trend.up{color:var(--success)}.kpi-trend.down{color:var(--danger)}.kpi-trend.neutral{color:var(--text-muted)}
+.kpi-icon{font-size:1.5rem;margin-bottom:0.5rem}
+
+/* ─── Tables ─── */
+.table-wrap{overflow-x:auto;border-radius:var(--radius);border:1px solid var(--border);box-shadow:var(--shadow)}
+table{width:100%;border-collapse:collapse;font-size:0.875rem}
+th{background:var(--bg-subtle);font-weight:600;text-align:left;padding:0.75rem 1rem;border-bottom:2px solid var(--border-strong);color:var(--text-secondary);font-size:0.75rem;text-transform:uppercase;letter-spacing:0.05em;position:sticky;top:0;z-index:1}
+td{padding:0.75rem 1rem;border-bottom:1px solid var(--border);vertical-align:middle}
+tr:hover td{background:var(--bg-subtle)}
+tr:last-child td{border-bottom:none}
+
+/* ─── Badges / Pills ─── */
+.badge{display:inline-flex;align-items:center;gap:0.25rem;padding:0.2rem 0.6rem;border-radius:999px;font-size:0.75rem;font-weight:600;line-height:1.4}
+.badge-primary{background:rgba(99,102,241,0.12);color:var(--primary)}
+.badge-success{background:rgba(16,185,129,0.12);color:var(--success)}
+.badge-warning{background:rgba(245,158,11,0.12);color:var(--warning)}
+.badge-danger{background:rgba(239,68,68,0.12);color:var(--danger)}
+.badge-info{background:rgba(59,130,246,0.12);color:var(--info)}
+.badge-neutral{background:var(--bg-subtle);color:var(--text-secondary)}
+
+/* ─── Progress Bars ─── */
+.progress{height:8px;background:var(--bg-subtle);border-radius:999px;overflow:hidden}
+.progress-bar{height:100%;border-radius:999px;background:var(--primary);transition:width 0.6s ease}
+.progress-bar.success{background:var(--success)}.progress-bar.warning{background:var(--warning)}.progress-bar.danger{background:var(--danger)}
+.progress-lg{height:12px}
+.progress-label{display:flex;justify-content:space-between;font-size:0.8rem;color:var(--text-secondary);margin-bottom:0.25rem}
+
+/* ─── Lists ─── */
+.list{list-style:none;padding:0;margin:0}
+.list-item{display:flex;align-items:center;gap:0.75rem;padding:0.75rem 0;border-bottom:1px solid var(--border)}
+.list-item:last-child{border-bottom:none}
+.list-icon{width:2.25rem;height:2.25rem;border-radius:var(--radius-xs);background:rgba(99,102,241,0.1);display:flex;align-items:center;justify-content:center;font-size:1rem;flex-shrink:0}
+.list-content{flex:1;min-width:0}
+
+/* ─── Tabs (CSS-only) ─── */
+.tabs{display:flex;gap:0;border-bottom:2px solid var(--border);margin-bottom:1rem}
+.tab{padding:0.6rem 1rem;font-size:0.875rem;font-weight:500;color:var(--text-secondary);cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-2px;transition:var(--transition);user-select:none}
+.tab:hover{color:var(--text)}.tab.active{color:var(--primary);border-bottom-color:var(--primary);font-weight:600}
+
+/* ─── Alerts ─── */
+.alert{padding:0.875rem 1rem;border-radius:var(--radius-sm);font-size:0.875rem;display:flex;align-items:flex-start;gap:0.5rem}
+.alert-info{background:rgba(59,130,246,0.08);color:var(--info);border:1px solid rgba(59,130,246,0.15)}
+.alert-success{background:rgba(16,185,129,0.08);color:var(--success);border:1px solid rgba(16,185,129,0.15)}
+.alert-warning{background:rgba(245,158,11,0.08);color:var(--warning);border:1px solid rgba(245,158,11,0.15)}
+.alert-danger{background:rgba(239,68,68,0.08);color:var(--danger);border:1px solid rgba(239,68,68,0.15)}
+
+/* ─── Divider ─── */
+.divider{border:none;border-top:1px solid var(--border);margin:1rem 0}
+
+/* ─── Tags/Chips ─── */
+.tag{display:inline-flex;align-items:center;gap:0.25rem;padding:0.25rem 0.5rem;background:var(--bg-subtle);border:1px solid var(--border);border-radius:var(--radius-xs);font-size:0.75rem;color:var(--text-secondary)}
+
+/* ─── Tooltips ─── */
+[data-tip]{position:relative;cursor:help}
+[data-tip]::after{content:attr(data-tip);position:absolute;bottom:calc(100% + 6px);left:50%;transform:translateX(-50%);background:#1e293b;color:#fff;padding:0.3rem 0.6rem;border-radius:var(--radius-xs);font-size:0.7rem;white-space:nowrap;opacity:0;pointer-events:none;transition:opacity 0.15s}
+[data-tip]:hover::after{opacity:1}
+
+/* ─── Charts (CSS-only Bars) ─── */
+.bar-chart{display:flex;align-items:flex-end;gap:0.5rem;height:160px;padding-top:1rem}
+.bar{flex:1;background:var(--primary);border-radius:var(--radius-xs) var(--radius-xs) 0 0;min-width:24px;position:relative;transition:height 0.4s ease}
+.bar:hover{opacity:0.85}.bar-label{position:absolute;bottom:-1.5rem;left:50%;transform:translateX(-50%);font-size:0.65rem;color:var(--text-muted);white-space:nowrap}
+.bar-value{position:absolute;top:-1.25rem;left:50%;transform:translateX(-50%);font-size:0.7rem;font-weight:600;color:var(--text)}
+
+/* ─── Donut Chart (SVG helper) ─── */
+.donut-chart{position:relative;display:inline-flex;align-items:center;justify-content:center}
+.donut-label{position:absolute;text-align:center;font-weight:700;font-size:1.25rem;color:var(--text)}
+
+/* ─── Timeline ─── */
+.timeline{position:relative;padding-left:2rem}
+.timeline::before{content:'';position:absolute;left:0.5rem;top:0;bottom:0;width:2px;background:var(--border)}
+.timeline-item{position:relative;padding-bottom:1.25rem}
+.timeline-item::before{content:'';position:absolute;left:-1.5rem;top:0.35rem;width:10px;height:10px;border-radius:50%;background:var(--primary);border:2px solid var(--bg-card);z-index:1}
+.timeline-item.done::before{background:var(--success)}.timeline-item.pending::before{background:var(--text-muted)}
+.timeline-date{font-size:0.75rem;color:var(--text-muted);margin-bottom:0.125rem}
+
+/* ─── Animations ─── */
+@keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+@keyframes countUp{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
+.animate-in{animation:fadeIn 0.4s ease both}
+.animate-in-1{animation-delay:0.05s}.animate-in-2{animation-delay:0.1s}.animate-in-3{animation-delay:0.15s}.animate-in-4{animation-delay:0.2s}
+.kpi-value{animation:countUp 0.5s ease both}
+
+/* ─── Scrollbar ─── */
+::-webkit-scrollbar{width:6px;height:6px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:var(--border-strong);border-radius:3px}
+
+/* ─── Auto-Resize Bridge (injected by Gateway) ─── */
+"""
+
+# Resize-Script das in jedes Artifact injiziert wird (postMessage für Auto-Höhe)
+ARTIFACT_RESIZE_SCRIPT = """<script>
+(function(){
+  function h(){var b=document.body,d=document.documentElement;
+    var height=Math.max(b.scrollHeight,b.offsetHeight,d.scrollHeight,d.offsetHeight);
+    parent.postMessage({type:'artifact-resize',height:height},'*');
+  }
+  h();
+  new MutationObserver(h).observe(document.body,{childList:true,subtree:true,attributes:true});
+  window.addEventListener('resize',h);
+  document.addEventListener('click',function(e){var a=e.target.closest('a');if(a&&a.href&&!a.target)a.target='_top';});
+})();
+</script>"""
+
+
+def inject_artifact_css(html: str, branding: dict = None) -> str:
+    """
+    Injiziert das Design-System CSS und Branding-Variablen in Artifact-HTML.
+    Wird automatisch bei jedem render_artifact Call aufgerufen.
+    """
+    # Branding CSS Custom Property Overrides
+    brand_overrides = ""
+    if branding:
+        overrides = []
+        if branding.get("primary_color"):
+            overrides.append(f"--primary:{branding['primary_color']}")
+        if branding.get("secondary_color"):
+            overrides.append(f"--secondary:{branding['secondary_color']}")
+        if branding.get("accent_color"):
+            overrides.append(f"--accent:{branding['accent_color']}")
+        if branding.get("font_family"):
+            overrides.append(f"--font:{branding['font_family']},system-ui,sans-serif")
+        if overrides:
+            brand_overrides = f"\n:root{{{';'.join(overrides)}}}"
+
+    css_block = f"<style>{ARTIFACT_BASE_CSS}{brand_overrides}</style>"
+
+    # Inject: Wenn <head> vorhanden, dort rein. Sonst ans Ende vom <body> oder einfach davor.
+    if "<head>" in html.lower():
+        html = html.replace("<head>", f"<head>{css_block}", 1).replace("<HEAD>", f"<HEAD>{css_block}", 1)
+    elif "<body>" in html.lower():
+        html = html.replace("<body>", f"<body>{css_block}", 1).replace("<BODY>", f"<BODY>{css_block}", 1)
+    else:
+        html = css_block + html
+
+    # Resize-Script injizieren (vor </body> oder am Ende)
+    if "</body>" in html.lower():
+        html = html.replace("</body>", f"{ARTIFACT_RESIZE_SCRIPT}</body>", 1).replace("</BODY>", f"{ARTIFACT_RESIZE_SCRIPT}</BODY>", 1)
+    else:
+        html = html + ARTIFACT_RESIZE_SCRIPT
+
+    return html
+
+
 RENDER_ARTIFACT_TOOL = {
     "type": "function",
     "function": {
         "name": "render_artifact",
         "description": (
-            "Rendere eine interaktive HTML-Visualisierung inline im Chat. "
+            "Rendere eine interaktive HTML-Visualisierung nahtlos inline im Chat. "
             "Nutze dies für Tabellen, KPI-Dashboards, Karten, Charts, Vergleiche, "
-            "Checklisten, Timelines, interaktive Slider, Rechner — alles was visuell "
-            "besser wirkt als reiner Text. Generiere ein vollständiges, selbständiges "
-            "HTML-Dokument mit eingebettetem CSS und optional JavaScript."
+            "Checklisten, Timelines, interaktive Rechner — alles was visuell "
+            "besser wirkt als reiner Text. Du musst NUR den HTML-Body-Inhalt liefern — "
+            "ein umfassendes CSS Design-System mit Utility-Klassen und Komponenten "
+            "(cards, kpis, tables, badges, progress bars, bar-charts, timelines etc.) "
+            "wird automatisch injiziert. Nutze die vordefinierten CSS-Klassen."
         ),
         "parameters": {
             "type": "object",
             "properties": {
                 "title": {
                     "type": "string",
-                    "description": "Kurzer Titel für das Artifact (wird als Header angezeigt).",
+                    "description": "Interner Titel (wird NICHT sichtbar angezeigt, nur für Logging).",
                 },
                 "html": {
                     "type": "string",
                     "description": (
-                        "Vollständiges HTML mit eingebettetem <style> und optional <script>. "
-                        "Nutze modernes, cleanes Design: font-family system-ui, abgerundete Ecken, "
-                        "dezente Schatten. Unterstütze Dark-Mode via prefers-color-scheme. "
-                        "Für Links zu App-Seiten (CRM etc.) nutze relative URLs mit target=\"_top\"."
+                        "HTML-Content der die vordefinierten CSS-Klassen des Design-Systems nutzt. "
+                        "Kein eigenes CSS nötig — nutze: .card, .kpi, .kpi-value, .kpi-label, "
+                        ".table-wrap+table, .badge-*, .progress, .bar-chart+.bar, .timeline, "
+                        ".grid .cols-2/3/4, .alert-*, .tag, .list+.list-item. "
+                        "Hintergrund ist transparent (fügt sich nahtlos in den Chat ein). "
+                        "Dark-Mode wird automatisch unterstützt. "
+                        "Für CRM-Links: <a href=\"/crm/contacts/{id}\" target=\"_top\">."
                     ),
                 },
             },
@@ -197,10 +409,10 @@ ARTIFACT_SYSTEM_PROMPT = """
 
 ## Artifact-System (Visualisierungen)
 
-Du hast ein mächtiges Tool `render_artifact` zur Verfügung, mit dem du interaktive HTML-Visualisierungen direkt im Chat rendern kannst — ähnlich wie Claude Artifacts.
+Du hast ein mächtiges Tool `render_artifact` zur Verfügung, mit dem du interaktive HTML-Visualisierungen nahtlos im Chat rendern kannst — ähnlich wie Claude Artifacts. Ein umfassendes **CSS Design-System** wird automatisch injiziert — du musst KEIN eigenes CSS schreiben!
 
 ### Wann nutzen:
-- Tabellen mit vielen Daten (sortierbar, durchsuchbar)
+- Tabellen mit Daten (sortierbar, durchsuchbar)
 - KPI-Dashboards mit großen Zahlen und Trends
 - Kontakt-/Deal-Karten mit Links zum CRM
 - Vergleichstabellen (Pro/Contra, Feature-Matrix)
@@ -214,21 +426,74 @@ Du hast ein mächtiges Tool `render_artifact` zur Verfügung, mit dem du interak
 - Einzelne Fakten oder Zahlen
 - Wenn der User explizit Text möchte
 
-### Design-Richtlinien für HTML:
-- `font-family: system-ui, -apple-system, 'Segoe UI', sans-serif`
-- Abgerundete Ecken: `border-radius: 12px`
-- Dezente Schatten und Borders
-- Responsive: `max-width: 100%; box-sizing: border-box`
-- Dark-Mode via `@media (prefers-color-scheme: dark) { ... }`
-- Helle Variante: `background: #ffffff; color: #1a1a2e`
-- Dunkle Variante: `background: #1e1e2e; color: #e2e8f0`
-- Akzentfarbe: `#6366f1` (Indigo)
-- Erfolg: `#10b981`, Warnung: `#f59e0b`, Fehler: `#ef4444`
-- Padding: mindestens `1.5rem`
-- Für Tabellen: `hover`-Effekt auf Zeilen, `sticky` Header
-- Für KPIs: Große Zahl, kleines Label, optionaler Trend-Pfeil (↑↓)
-- Für CRM-Links: `<a href="/crm/contacts/{id}" target="_top">` (relative URLs!)
-- Immer `<meta charset="utf-8">` im HTML
+### Verfügbare CSS-Klassen (automatisch injiziert):
+
+**Layout:** `.grid`, `.cols-2`, `.cols-3`, `.cols-4`, `.flex`, `.flex-col`, `.items-center`, `.justify-between`, `.gap-1` bis `.gap-4`, `.p-2` bis `.p-6`, `.mt-1` bis `.mt-4`, `.mb-2`, `.mb-4`, `.w-full`
+
+**Typography:** `.text-xs` bis `.text-4xl`, `.font-bold`, `.font-semibold`, `.font-medium`, `.text-primary`, `.text-success`, `.text-warning`, `.text-danger`, `.text-muted`, `.text-secondary`, `.mono`, `.truncate`
+
+**Cards:** `.card` (mit Shadow+Border), `.card-flat` (subtle), `.card-accent` (linke Akzent-Border)
+
+**KPI/Metrics:**
+```html
+<div class="grid cols-3 gap-4">
+  <div class="kpi">
+    <div class="kpi-icon">📊</div>
+    <div class="kpi-value">1.247</div>
+    <div class="kpi-label">Kontakte</div>
+    <div class="kpi-trend up">↑ 12%</div>
+  </div>
+</div>
+```
+
+**Tabellen:**
+```html
+<div class="table-wrap">
+  <table>
+    <thead><tr><th>Name</th><th>Status</th></tr></thead>
+    <tbody><tr><td>Max</td><td><span class="badge badge-success">Aktiv</span></td></tr></tbody>
+  </table>
+</div>
+```
+
+**Badges:** `.badge .badge-primary`, `.badge-success`, `.badge-warning`, `.badge-danger`, `.badge-info`, `.badge-neutral`
+
+**Progress Bars:**
+```html
+<div class="progress-label"><span>Fortschritt</span><span>75%</span></div>
+<div class="progress"><div class="progress-bar" style="width:75%"></div></div>
+```
+
+**Bar Charts (CSS-only):**
+```html
+<div class="bar-chart">
+  <div class="bar" style="height:80%"><span class="bar-value">80</span><span class="bar-label">Jan</span></div>
+  <div class="bar" style="height:60%"><span class="bar-value">60</span><span class="bar-label">Feb</span></div>
+</div>
+```
+
+**Timeline:**
+```html
+<div class="timeline">
+  <div class="timeline-item done"><div class="timeline-date">01.03.2026</div><strong>Schritt 1</strong></div>
+  <div class="timeline-item"><div class="timeline-date">15.03.2026</div><strong>Schritt 2</strong></div>
+</div>
+```
+
+**Alerts:** `.alert .alert-info`, `.alert-success`, `.alert-warning`, `.alert-danger`
+**Lists:** `.list` > `.list-item` > `.list-icon` + `.list-content`
+**Tabs:** `.tabs` > `.tab` (+ `.active`)
+**Tags:** `.tag`
+**Divider:** `<hr class="divider">`
+**Animations:** `.animate-in`, `.animate-in-1` bis `.animate-in-4` (gestaffelt)
+
+### Wichtige Regeln:
+- Hintergrund ist TRANSPARENT — das Artifact fügt sich nahtlos in den Chat ein
+- Dark-Mode wird automatisch unterstützt via CSS Custom Properties
+- Für CRM-Links: `<a href="/crm/contacts/{id}" target="_top">`
+- Branding-Farben (--primary, --secondary, --accent) werden automatisch injiziert
+- Du kannst zusätzliches `<style>` und `<script>` hinzufügen wenn nötig
+- Nutze `<meta charset="utf-8">` im HTML
 """
 
 
@@ -385,7 +650,7 @@ async def stream_chat_generator(data: ChatRequest):
                         # render_artifact: Gateway-intercepted (nicht an Laravel senden)
                         if tool_name == "render_artifact":
                             artifact_title = tool_args.get("title", "Visualisierung")
-                            artifact_html = tool_args.get("html", "")
+                            artifact_html = inject_artifact_css(tool_args.get("html", ""), data.trainer_branding)
                             artifact_data = {"title": artifact_title, "html": artifact_html}
                             artifacts.append(artifact_data)
                             log.info("Stream chat %d: Artifact '%s' (%d bytes HTML)", data.chat_id, artifact_title, len(artifact_html))
@@ -572,7 +837,7 @@ def chat_pipeline_sync(data: ChatRequest) -> dict:
                 # render_artifact: Gateway-intercepted
                 if tool_name == "render_artifact":
                     artifact_title = tool_args.get("title", "Visualisierung")
-                    artifact_html = tool_args.get("html", "")
+                    artifact_html = inject_artifact_css(tool_args.get("html", ""), data.trainer_branding)
                     artifacts.append({"title": artifact_title, "html": artifact_html})
                     log.info("Chat %d [sync]: Artifact '%s' (%d bytes HTML)", data.chat_id, artifact_title, len(artifact_html))
                     messages.append({
@@ -735,7 +1000,7 @@ def chat_pipeline(data: ChatRequest):
                 # render_artifact: Gateway-intercepted
                 if tool_name == "render_artifact":
                     artifact_title = tool_args.get("title", "Visualisierung")
-                    artifact_html = tool_args.get("html", "")
+                    artifact_html = inject_artifact_css(tool_args.get("html", ""), data.trainer_branding)
                     artifacts.append({"title": artifact_title, "html": artifact_html})
                     log.info("Chat %d: Artifact '%s' (%d bytes HTML)", data.chat_id, artifact_title, len(artifact_html))
                     messages.append({
@@ -1323,7 +1588,7 @@ def task_pipeline(data: TaskExecuteRequest):
                 # render_artifact: Gateway-intercepted (kein Laravel-Call)
                 if tool_name == "render_artifact":
                     artifact_title = tool_args.get("title", "Visualisierung")
-                    artifact_html = tool_args.get("html", "")
+                    artifact_html = inject_artifact_css(tool_args.get("html", ""), data.trainer_branding)
                     log.info("Task %d: Artifact '%s' (%d bytes HTML)", data.job_id, artifact_title, len(artifact_html))
                     all_tool_calls.append({"id": tc.id, "name": tool_name, "arguments": tool_args})
                     messages.append({
