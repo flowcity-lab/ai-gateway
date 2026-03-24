@@ -782,14 +782,14 @@ def generate_image(params: dict, user_id: int, chat_id: int) -> dict:
     try:
         log.info("Bildgenerierung: prompt='%s', size=%s, quality=%s", prompt[:80], size, quality)
 
-        # OpenAI Images API aufrufen (output_format=b64_json für permanente Speicherung)
+        # OpenAI Images API aufrufen (gpt-image-1 liefert immer Base64)
         image_response = oai_client.images.generate(
             model="gpt-image-1",
             prompt=prompt,
             size=size,
             quality=quality,
             background=background,
-            output_format="b64_json",
+            output_format="png",
             n=1,
         )
 
