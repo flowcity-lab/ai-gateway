@@ -371,6 +371,38 @@ ARTIFACT_RESIZE_SCRIPT = """<script>
 </script>"""
 
 
+def _hex_to_rgb(hex_color: str) -> tuple:
+    """Konvertiert #RRGGBB zu (r, g, b)."""
+    hex_color = hex_color.lstrip('#')
+    if len(hex_color) == 3:
+        hex_color = ''.join(c * 2 for c in hex_color)
+    return tuple(int(hex_color[i:i+2], 16) for i in (0, 2, 4))
+
+
+def _lighten_hex(hex_color: str, factor: float = 0.3) -> str:
+    """Hellt eine Hex-Farbe auf."""
+    try:
+        r, g, b = _hex_to_rgb(hex_color)
+        r = min(255, int(r + (255 - r) * factor))
+        g = min(255, int(g + (255 - g) * factor))
+        b = min(255, int(b + (255 - b) * factor))
+        return f"#{r:02x}{g:02x}{b:02x}"
+    except Exception:
+        return hex_color
+
+
+def _darken_hex(hex_color: str, factor: float = 0.2) -> str:
+    """Dunkelt eine Hex-Farbe ab."""
+    try:
+        r, g, b = _hex_to_rgb(hex_color)
+        r = max(0, int(r * (1 - factor)))
+        g = max(0, int(g * (1 - factor)))
+        b = max(0, int(b * (1 - factor)))
+        return f"#{r:02x}{g:02x}{b:02x}"
+    except Exception:
+        return hex_color
+
+
 def inject_artifact_css(html: str, branding: dict = None) -> str:
     """
     Injiziert das Design-System CSS und Branding-Variablen in Artifact-HTML.
@@ -380,8 +412,11 @@ def inject_artifact_css(html: str, branding: dict = None) -> str:
     brand_overrides = ""
     if branding:
         overrides = []
-        if branding.get("primary_color"):
-            overrides.append(f"--primary:{branding['primary_color']}")
+        primary = branding.get("primary_color")
+        if primary:
+            overrides.append(f"--primary:{primary}")
+            overrides.append(f"--primary-light:{_lighten_hex(primary, 0.3)}")
+            overrides.append(f"--primary-dark:{_darken_hex(primary, 0.2)}")
         if branding.get("secondary_color"):
             overrides.append(f"--secondary:{branding['secondary_color']}")
         if branding.get("accent_color"):
@@ -390,6 +425,7 @@ def inject_artifact_css(html: str, branding: dict = None) -> str:
             overrides.append(f"--font:{branding['font_family']},system-ui,sans-serif")
         if overrides:
             brand_overrides = f"\n:root{{{';'.join(overrides)}}}"
+            log.info("Artifact branding: %s", '; '.join(overrides))
 
     css_block = f"<style>{ARTIFACT_BASE_CSS}{brand_overrides}</style>"
 
@@ -629,6 +665,11 @@ Du hast das Tool `render_artifact` zur Verfügung, mit dem du interaktive HTML-V
 - Nutze `.section-title` für Abschnittsüberschriften
 - Nutze `.text-gradient` für hervorgehobenen Text
 - Du kannst zusätzliches `<style>` und `<script>` hinzufügen wenn nötig
+
+### ⛔ KEINE sinnlosen interaktiven Elemente:
+- Verwende KEINE `<input type="range">`, `<input type="number">`, `<select>` oder ähnliche Form-Elemente AUSSER sie haben funktionales JavaScript das tatsächlich etwas auf der Seite verändert (z.B. einen Wert berechnet, ein Ergebnis filtert, eine Visualisierung aktualisiert).
+- Ein Schieberegler der nichts tut ist schlimmer als keiner. Bevorzuge statische, hochwertige Darstellungen (Score-Rings, Progress-Bars, Badges) über nutzlose Inputs.
+- Interaktive Elemente sind NUR erlaubt wenn der JavaScript-Code dabei ist der sie funktional macht.
 """
 
 
