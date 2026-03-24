@@ -7,13 +7,17 @@ und sendet Ergebnisse per Callback zurück.
 import os
 import time
 import json
+import uuid
 import logging
+import asyncio
 from contextlib import asynccontextmanager
 from typing import Optional
 
 import httpx
 import openai
 from fastapi import FastAPI, Request, HTTPException, BackgroundTasks
+from fastapi.responses import StreamingResponse
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 # ── Konfiguration (Umgebungsvariablen) ────────────────────────────────
@@ -76,6 +80,20 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="AI-Gateway", lifespan=lifespan)
+
+# CORS für SSE-Streaming (Browser → Gateway direkt)
+ALLOWED_ORIGINS = os.environ.get("CORS_ALLOWED_ORIGINS", "*").split(",")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=ALLOWED_ORIGINS,
+    allow_methods=["GET", "POST"],
+    allow_headers=["*"],
+)
+
+# ── Stream-Token Store (kurzlebig, in-memory) ────────────────────────
+# Token → {data: ChatRequest-dict, created_at: timestamp}
+stream_tokens: dict = {}
+STREAM_TOKEN_TTL = 120  # Sekunden bis Token verfällt
 
 
 # ── Auth ──────────────────────────────────────────────────────────────
@@ -147,6 +165,204 @@ async def chat(request: Request, bg: BackgroundTasks):
     bg.add_task(chat_pipeline, data)
 
     return {"status": "accepted", "chat_id": data.chat_id}
+
+
+# ── SSE Streaming ────────────────────────────────────────────────────
+
+@app.post("/chat/stream/init")
+async def stream_init(request: Request):
+    """
+    Laravel ruft diesen Endpoint auf, um einen Stream vorzubereiten.
+    Gibt einen kurzlebigen Token zurück, den der Browser für EventSource nutzt.
+    """
+    verify_auth(request)
+    try:
+        raw = await request.body()
+        body = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        raise HTTPException(400, "Invalid request")
+
+    data = ChatRequest(**body)
+    token = str(uuid.uuid4())
+
+    # Abgelaufene Tokens aufräumen
+    now = time.time()
+    expired = [k for k, v in stream_tokens.items() if now - v["created_at"] > STREAM_TOKEN_TTL]
+    for k in expired:
+        del stream_tokens[k]
+
+    stream_tokens[token] = {"data": data, "created_at": now}
+    log.info("Stream init: chat_id=%d token=%s", data.chat_id, token[:8])
+
+    return {"stream_token": token, "chat_id": data.chat_id}
+
+
+@app.get("/chat/stream")
+async def stream_chat(token: str):
+    """
+    SSE-Endpoint: Browser öffnet EventSource mit ?token=xxx.
+    Streamt LLM-Tokens als Server-Sent Events.
+    """
+    entry = stream_tokens.pop(token, None)
+    if not entry:
+        raise HTTPException(401, "Invalid or expired stream token")
+
+    if time.time() - entry["created_at"] > STREAM_TOKEN_TTL:
+        raise HTTPException(401, "Stream token expired")
+
+    data: ChatRequest = entry["data"]
+    log.info("Stream start: chat_id=%d", data.chat_id)
+
+    return StreamingResponse(
+        stream_chat_generator(data),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
+
+
+async def stream_chat_generator(data: ChatRequest):
+    """Generator der SSE-Events yieldet. Führt Tool-Calls synchron aus,
+    streamt nur die finale Text-Antwort."""
+    start_time = time.time()
+    full_content = ""
+    usage = {"input_tokens": 0, "output_tokens": 0}
+    model = get_model_name(data.model)
+    all_tool_calls = []
+    all_tool_results = []
+
+    try:
+        # RAG
+        rag_context = []
+        if data.notebook_ids and data.doc_processor_url:
+            rag_context = search_documents(
+                query=data.message,
+                notebook_ids=data.notebook_ids,
+                doc_processor_url=data.doc_processor_url,
+                doc_processor_secret=data.doc_processor_secret,
+            )
+
+        messages = build_messages(data, rag_context=rag_context)
+        tools = build_tools(data.skills) if data.skills else None
+        max_iterations = 5
+
+        # Tool-Call-Loop (nicht-gestreamt — nur finale Antwort wird gestreamt)
+        for iteration in range(max_iterations):
+            call_params = {
+                "model": model,
+                "messages": messages,
+                "temperature": data.temperature,
+                "max_tokens": data.max_tokens,
+            }
+
+            is_last_iteration = iteration >= max_iterations - 1
+            has_tools = tools and not is_last_iteration
+
+            if has_tools:
+                call_params["tools"] = tools
+                call_params["tool_choice"] = "auto"
+
+            # Prüfen ob wir Tool-Calls erwarten — wenn ja, nicht streamen
+            if has_tools:
+                response = oai_client.chat.completions.create(**call_params)
+                choice = response.choices[0]
+
+                if choice.message.tool_calls:
+                    # Tool-Calls verarbeiten
+                    messages.append(choice.message)
+                    for tc in choice.message.tool_calls:
+                        tool_name = tc.function.name
+                        tool_args = json.loads(tc.function.arguments)
+                        log.info("Stream chat %d: Tool-Call → %s", data.chat_id, tool_name)
+
+                        # Status-Event an Browser senden
+                        yield f"event: status\ndata: {json.dumps({'tool': tool_name})}\n\n"
+
+                        all_tool_calls.append({"id": tc.id, "name": tool_name, "arguments": tool_args})
+                        result = execute_skill(tool_name, tool_args, data.user_id)
+                        all_tool_results.append({"tool_call_id": tc.id, "name": tool_name, "result": result})
+
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tc.id,
+                            "content": json.dumps(result, ensure_ascii=False),
+                        })
+
+                    # Usage akkumulieren
+                    if response.usage:
+                        usage["input_tokens"] += response.usage.prompt_tokens
+                        usage["output_tokens"] += response.usage.completion_tokens
+                    continue
+
+                # Kein Tool-Call aber auch nicht gestreamt — Content extrahieren
+                full_content = choice.message.content or ""
+                if response.usage:
+                    usage["input_tokens"] += response.usage.prompt_tokens
+                    usage["output_tokens"] += response.usage.completion_tokens
+
+                # Content auf einmal als Tokens senden
+                for i in range(0, len(full_content), 4):
+                    chunk = full_content[i:i+4]
+                    yield f"data: {json.dumps({'token': chunk})}\n\n"
+                break
+
+            # Letzte Iteration oder keine Tools → Streaming!
+            call_params["stream"] = True
+            call_params["stream_options"] = {"include_usage": True}
+            stream_response = oai_client.chat.completions.create(**call_params)
+
+            for chunk in stream_response:
+                if not chunk.choices:
+                    # Usage kommt im letzten Chunk
+                    if chunk.usage:
+                        usage["input_tokens"] += chunk.usage.prompt_tokens
+                        usage["output_tokens"] += chunk.usage.completion_tokens
+                    continue
+
+                delta = chunk.choices[0].delta
+                if delta and delta.content:
+                    full_content += delta.content
+                    yield f"data: {json.dumps({'token': delta.content})}\n\n"
+
+            break  # Nach Streaming sind wir fertig
+
+        duration_ms = int((time.time() - start_time) * 1000)
+
+        # Done-Event mit Metadaten
+        yield f"event: done\ndata: {json.dumps({'usage': usage, 'model': model, 'duration_ms': duration_ms, 'tool_calls': all_tool_calls or None, 'tool_results': all_tool_results or None})}\n\n"
+
+        log.info("Stream chat %d: Fertig. %d tokens, %d ms", data.chat_id, usage["output_tokens"], duration_ms)
+
+        # Callback an Laravel (Antwort persistieren + Battery-Tracking)
+        callback_url = data.callback_url or LARAVEL_CALLBACK_URL
+        if callback_url:
+            send_callback(callback_url, {
+                "chat_id": data.chat_id,
+                "content": full_content,
+                "usage": usage,
+                "model": model,
+                "duration_ms": duration_ms,
+                "tool_calls": all_tool_calls or None,
+                "tool_results": all_tool_results or None,
+            })
+
+    except Exception as e:
+        log.error("Stream chat %d: Fehler — %s", data.chat_id, str(e))
+        yield f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n"
+
+        # Error-Callback
+        callback_url = data.callback_url or LARAVEL_CALLBACK_URL
+        if callback_url:
+            send_callback(callback_url, {
+                "chat_id": data.chat_id,
+                "content": f"Fehler bei der Verarbeitung: {str(e)}",
+                "usage": {"input_tokens": 0, "output_tokens": 0},
+                "model": data.model,
+                "duration_ms": int((time.time() - start_time) * 1000),
+            })
 
 
 # ── Chat Pipeline (Sync) ─────────────────────────────────────────────
@@ -583,8 +799,13 @@ def memory_extraction_pipeline(data: MemoryExtractionRequest):
                 f"{existing_str}\n\n"
                 "Antworte als JSON-Array mit Objekten: "
                 '[{"category": "...", "content": "...", "confidence": 0.0-1.0}]\n'
-                "Kategorien: preference, business_info, personal, communication_style, goal\n"
-                "Nur Fakten mit confidence >= 0.7 extrahieren. "
+                "Kategorien:\n"
+                "- style: Kommunikationsstil, Tonalität (z.B. 'duzt Kunden', 'formell bei Erstansprache')\n"
+                "- preference: Vorlieben und Präferenzen (z.B. 'Bevorzugt kurze E-Mails')\n"
+                "- fact: Allgemeine Fakten über den Trainer (z.B. 'Spezialisiert auf Outdoor-Training')\n"
+                "- business: Geschäftliche Infos (z.B. 'Firma: TrainerPro GmbH, 5 Mitarbeiter')\n"
+                "- audience: Zielgruppen-Infos (z.B. 'Zielgruppe: Führungskräfte 35-55')\n\n"
+                "Nur Fakten mit confidence >= 0.6 extrahieren. "
                 "Leeres Array [] wenn keine neuen Fakten."
             )},
             {"role": "user", "content": f"Chat-Verlauf:\n{conversation}"},
