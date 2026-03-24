@@ -131,6 +131,105 @@ class ChatRequest(BaseModel):
     notebook_ids: list = []           # z.B. ["nb_1", "nb_3"]
     doc_processor_url: str = ""       # z.B. "https://trainer-doc-processor.ai-guide.at"
     doc_processor_secret: str = ""    # Bearer-Token für doc-processor
+    # Trainer-Branding (Farben, Logo als Base64)
+    trainer_branding: dict = None     # {"company_name", "primary_color", "logo_base64", ...}
+
+
+# ── Skill-Labels (technischer Name → menschenlesbar) ────────────────
+
+SKILL_LABELS = {
+    "crm_search": {"label": "CRM durchsuchen", "icon": "🔍"},
+    "crm_create_contact": {"label": "Kontakt anlegen", "icon": "👤"},
+    "crm_update_deal": {"label": "Deal aktualisieren", "icon": "📊"},
+    "crm_create_followup": {"label": "Wiedervorlage erstellen", "icon": "📅"},
+    "content_generate": {"label": "Inhalt generieren", "icon": "✍️"},
+    "image_generate": {"label": "Bild generieren", "icon": "🎨"},
+    "pdf_generate": {"label": "PDF erstellen", "icon": "📄"},
+    "email_generate": {"label": "E-Mail verfassen", "icon": "📧"},
+    "campaign_analyze": {"label": "Kampagne analysieren", "icon": "📈"},
+    "ai_background_task": {"label": "Hintergrund-Aufgabe starten", "icon": "⚙️"},
+    "delegate_to_assistant": {"label": "An Assistenten delegieren", "icon": "🔄"},
+}
+
+def get_skill_label(skill_name: str) -> dict:
+    """Gibt Label und Icon für einen Skill zurück."""
+    default = {"label": skill_name.replace("_", " ").title(), "icon": "🔧"}
+    return SKILL_LABELS.get(skill_name, default)
+
+
+# ── Artifact-System (Universal HTML Visualizer) ──────────────────────
+
+RENDER_ARTIFACT_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "render_artifact",
+        "description": (
+            "Rendere eine interaktive HTML-Visualisierung inline im Chat. "
+            "Nutze dies für Tabellen, KPI-Dashboards, Karten, Charts, Vergleiche, "
+            "Checklisten, Timelines, interaktive Slider, Rechner — alles was visuell "
+            "besser wirkt als reiner Text. Generiere ein vollständiges, selbständiges "
+            "HTML-Dokument mit eingebettetem CSS und optional JavaScript."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "title": {
+                    "type": "string",
+                    "description": "Kurzer Titel für das Artifact (wird als Header angezeigt).",
+                },
+                "html": {
+                    "type": "string",
+                    "description": (
+                        "Vollständiges HTML mit eingebettetem <style> und optional <script>. "
+                        "Nutze modernes, cleanes Design: font-family system-ui, abgerundete Ecken, "
+                        "dezente Schatten. Unterstütze Dark-Mode via prefers-color-scheme. "
+                        "Für Links zu App-Seiten (CRM etc.) nutze relative URLs mit target=\"_top\"."
+                    ),
+                },
+            },
+            "required": ["title", "html"],
+        },
+    },
+}
+
+
+ARTIFACT_SYSTEM_PROMPT = """
+
+## Artifact-System (Visualisierungen)
+
+Du hast ein mächtiges Tool `render_artifact` zur Verfügung, mit dem du interaktive HTML-Visualisierungen direkt im Chat rendern kannst — ähnlich wie Claude Artifacts.
+
+### Wann nutzen:
+- Tabellen mit vielen Daten (sortierbar, durchsuchbar)
+- KPI-Dashboards mit großen Zahlen und Trends
+- Kontakt-/Deal-Karten mit Links zum CRM
+- Vergleichstabellen (Pro/Contra, Feature-Matrix)
+- Interaktive Elemente (Schieberegler, Rechner, Quiz)
+- Charts und Diagramme (CSS/SVG-basiert)
+- Timelines und Checklisten
+- Jede andere Visualisierung die als HTML besser wirkt als Text
+
+### Wann NICHT nutzen:
+- Einfache kurze Antworten (normaler Text reicht)
+- Einzelne Fakten oder Zahlen
+- Wenn der User explizit Text möchte
+
+### Design-Richtlinien für HTML:
+- `font-family: system-ui, -apple-system, 'Segoe UI', sans-serif`
+- Abgerundete Ecken: `border-radius: 12px`
+- Dezente Schatten und Borders
+- Responsive: `max-width: 100%; box-sizing: border-box`
+- Dark-Mode via `@media (prefers-color-scheme: dark) { ... }`
+- Helle Variante: `background: #ffffff; color: #1a1a2e`
+- Dunkle Variante: `background: #1e1e2e; color: #e2e8f0`
+- Akzentfarbe: `#6366f1` (Indigo)
+- Erfolg: `#10b981`, Warnung: `#f59e0b`, Fehler: `#ef4444`
+- Padding: mindestens `1.5rem`
+- Für Tabellen: `hover`-Effekt auf Zeilen, `sticky` Header
+- Für KPIs: Große Zahl, kleines Label, optionaler Trend-Pfeil (↑↓)
+- Für CRM-Links: `<a href="/crm/contacts/{id}" target="_top">` (relative URLs!)
+- Immer `<meta charset="utf-8">` im HTML
+"""
 
 
 # ── Health ────────────────────────────────────────────────────────────
@@ -236,6 +335,7 @@ async def stream_chat_generator(data: ChatRequest):
     model = get_model_name(data.model)
     all_tool_calls = []
     all_tool_results = []
+    artifacts = []  # Gesammelte render_artifact Ergebnisse
 
     try:
         # RAG
@@ -280,13 +380,47 @@ async def stream_chat_generator(data: ChatRequest):
                         tool_name = tc.function.name
                         tool_args = json.loads(tc.function.arguments)
                         log.info("Stream chat %d: Tool-Call → %s", data.chat_id, tool_name)
+                        skill_info = get_skill_label(tool_name)
 
-                        # Status-Event an Browser senden
-                        yield f"event: status\ndata: {json.dumps({'tool': tool_name})}\n\n"
+                        # render_artifact: Gateway-intercepted (nicht an Laravel senden)
+                        if tool_name == "render_artifact":
+                            artifact_title = tool_args.get("title", "Visualisierung")
+                            artifact_html = tool_args.get("html", "")
+                            artifact_data = {"title": artifact_title, "html": artifact_html}
+                            artifacts.append(artifact_data)
+                            log.info("Stream chat %d: Artifact '%s' (%d bytes HTML)", data.chat_id, artifact_title, len(artifact_html))
+
+                            # SSE artifact Event an Frontend senden
+                            yield f"event: artifact\ndata: {json.dumps(artifact_data, ensure_ascii=False)}\n\n"
+
+                            # Erfolg an GPT zurückmelden (damit GPT weitermachen kann)
+                            all_tool_calls.append({"id": tc.id, "name": tool_name, "arguments": tool_args})
+                            messages.append({
+                                "role": "tool",
+                                "tool_call_id": tc.id,
+                                "content": json.dumps({"success": True, "rendered": True, "title": artifact_title}, ensure_ascii=False),
+                            })
+                            continue
+
+                        # Delegation: eigene Start/End Events
+                        is_delegation = tool_name == "delegate_to_assistant"
+                        target_name = tool_args.get("target_assistant", "") if is_delegation else ""
+
+                        if is_delegation:
+                            yield f"event: delegation_start\ndata: {json.dumps({'tool': tool_name, 'label': skill_info['label'], 'icon': skill_info['icon'], 'target': target_name})}\n\n"
+                        else:
+                            yield f"event: tool_start\ndata: {json.dumps({'tool': tool_name, 'label': skill_info['label'], 'icon': skill_info['icon']})}\n\n"
 
                         all_tool_calls.append({"id": tc.id, "name": tool_name, "arguments": tool_args})
                         result = execute_skill(tool_name, tool_args, data.user_id, data.chat_id)
                         all_tool_results.append({"tool_call_id": tc.id, "name": tool_name, "result": result})
+                        skill_success = "error" not in result
+
+                        if is_delegation:
+                            delegate_name = result.get("assistant_name", target_name)
+                            yield f"event: delegation_end\ndata: {json.dumps({'tool': tool_name, 'label': delegate_name, 'success': skill_success})}\n\n"
+                        else:
+                            yield f"event: tool_end\ndata: {json.dumps({'tool': tool_name, 'label': skill_info['label'], 'icon': skill_info['icon'], 'success': skill_success})}\n\n"
 
                         # Base64-Daten entfernen bevor sie an GPT gehen (zu groß)
                         result.pop("_image_b64", None)
@@ -339,14 +473,17 @@ async def stream_chat_generator(data: ChatRequest):
         duration_ms = int((time.time() - start_time) * 1000)
 
         # Done-Event mit Metadaten
-        yield f"event: done\ndata: {json.dumps({'usage': usage, 'model': model, 'duration_ms': duration_ms, 'tool_calls': all_tool_calls or None, 'tool_results': all_tool_results or None})}\n\n"
+        done_data = {'usage': usage, 'model': model, 'duration_ms': duration_ms, 'tool_calls': all_tool_calls or None, 'tool_results': all_tool_results or None}
+        if artifacts:
+            done_data['artifacts'] = artifacts
+        yield f"event: done\ndata: {json.dumps(done_data)}\n\n"
 
-        log.info("Stream chat %d: Fertig. %d tokens, %d ms", data.chat_id, usage["output_tokens"], duration_ms)
+        log.info("Stream chat %d: Fertig. %d tokens, %d ms, %d artifacts", data.chat_id, usage["output_tokens"], duration_ms, len(artifacts))
 
         # Callback an Laravel (Antwort persistieren + Battery-Tracking)
         callback_url = data.callback_url or LARAVEL_CALLBACK_URL
         if callback_url:
-            send_callback(callback_url, {
+            callback_data = {
                 "chat_id": data.chat_id,
                 "content": full_content,
                 "usage": usage,
@@ -354,7 +491,10 @@ async def stream_chat_generator(data: ChatRequest):
                 "duration_ms": duration_ms,
                 "tool_calls": all_tool_calls or None,
                 "tool_results": all_tool_results or None,
-            })
+            }
+            if artifacts:
+                callback_data["artifacts"] = artifacts
+            send_callback(callback_url, callback_data)
 
     except Exception as e:
         log.error("Stream chat %d: Fehler — %s", data.chat_id, str(e))
@@ -400,6 +540,7 @@ def chat_pipeline_sync(data: ChatRequest) -> dict:
         all_tool_results = []
         pending_images = []
         pending_pdfs = []
+        artifacts = []  # Gesammelte render_artifact Ergebnisse
         max_iterations = 5
 
         for iteration in range(max_iterations):
@@ -427,6 +568,20 @@ def chat_pipeline_sync(data: ChatRequest) -> dict:
                 log.info("Chat %d [sync]: Tool-Call → %s(%s)", data.chat_id, tool_name, tool_args)
 
                 all_tool_calls.append({"id": tc.id, "name": tool_name, "arguments": tool_args})
+
+                # render_artifact: Gateway-intercepted
+                if tool_name == "render_artifact":
+                    artifact_title = tool_args.get("title", "Visualisierung")
+                    artifact_html = tool_args.get("html", "")
+                    artifacts.append({"title": artifact_title, "html": artifact_html})
+                    log.info("Chat %d [sync]: Artifact '%s' (%d bytes HTML)", data.chat_id, artifact_title, len(artifact_html))
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc.id,
+                        "content": json.dumps({"success": True, "rendered": True, "title": artifact_title}, ensure_ascii=False),
+                    })
+                    continue
+
                 result = execute_skill(tool_name, tool_args, data.user_id, data.chat_id)
                 all_tool_results.append({"tool_call_id": tc.id, "name": tool_name, "result": result})
 
@@ -488,6 +643,11 @@ def chat_pipeline_sync(data: ChatRequest) -> dict:
             log.info("Chat %d [sync]: %d PDFs in Response (pending_pdfs)",
                      data.chat_id, len(pending_pdfs))
 
+        if artifacts:
+            resp["artifacts"] = artifacts
+            log.info("Chat %d [sync]: %d Artifacts in Response",
+                     data.chat_id, len(artifacts))
+
         return resp
 
     except Exception as e:
@@ -537,6 +697,7 @@ def chat_pipeline(data: ChatRequest):
         model = get_model_name(data.model)
         all_tool_calls = []
         all_tool_results = []
+        artifacts = []  # Gesammelte render_artifact Ergebnisse
         max_iterations = 5  # Schutz vor Endlos-Loops
 
         for iteration in range(max_iterations):
@@ -570,6 +731,19 @@ def chat_pipeline(data: ChatRequest):
                     "name": tool_name,
                     "arguments": tool_args,
                 })
+
+                # render_artifact: Gateway-intercepted
+                if tool_name == "render_artifact":
+                    artifact_title = tool_args.get("title", "Visualisierung")
+                    artifact_html = tool_args.get("html", "")
+                    artifacts.append({"title": artifact_title, "html": artifact_html})
+                    log.info("Chat %d: Artifact '%s' (%d bytes HTML)", data.chat_id, artifact_title, len(artifact_html))
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc.id,
+                        "content": json.dumps({"success": True, "rendered": True, "title": artifact_title}, ensure_ascii=False),
+                    })
+                    continue
 
                 # Skill bei Laravel ausführen
                 result = execute_skill(tool_name, tool_args, data.user_id, data.chat_id)
@@ -606,7 +780,7 @@ def chat_pipeline(data: ChatRequest):
         # 5. Callback an Laravel
         callback_url = data.callback_url or LARAVEL_CALLBACK_URL
         if callback_url:
-            send_callback(callback_url, {
+            callback_data = {
                 "chat_id": data.chat_id,
                 "content": content,
                 "usage": usage,
@@ -614,7 +788,10 @@ def chat_pipeline(data: ChatRequest):
                 "duration_ms": duration_ms,
                 "tool_calls": all_tool_calls or None,
                 "tool_results": all_tool_results or None,
-            })
+            }
+            if artifacts:
+                callback_data["artifacts"] = artifacts
+            send_callback(callback_url, callback_data)
 
     except Exception as e:
         log.error("Chat %d: Fehler — %s", data.chat_id, str(e))
@@ -704,6 +881,33 @@ def build_messages(data: ChatRequest, rag_context: list = None) -> list:
             f"{context_block}"
         )
 
+    # Trainer-Branding injizieren
+    if data.trainer_branding:
+        b = data.trainer_branding
+        branding_lines = []
+        if b.get("company_name"):
+            branding_lines.append(f"- Firmenname: {b['company_name']}")
+        if b.get("primary_color"):
+            branding_lines.append(f"- Primärfarbe: {b['primary_color']}")
+        if b.get("secondary_color"):
+            branding_lines.append(f"- Sekundärfarbe: {b['secondary_color']}")
+        if b.get("accent_color"):
+            branding_lines.append(f"- Akzentfarbe: {b['accent_color']}")
+        if b.get("font_family"):
+            branding_lines.append(f"- Schriftart: {b['font_family']}")
+        if b.get("logo_base64") and b.get("logo_mime_type"):
+            branding_lines.append(f"- Logo: data:{b['logo_mime_type']};base64,{b['logo_base64']}")
+            branding_lines.append("  (Verwende diesen Data-URI direkt als <img src=\"...\"> in HTML/PDF-Artefakten)")
+        if branding_lines:
+            system_parts.append(
+                "\n\n## Trainer-Branding\n"
+                "Verwende diese Branding-Informationen wenn du PDFs, HTML-Artefakte oder Dokumente erstellst:\n"
+                + "\n".join(branding_lines)
+            )
+
+    # Artifact-System Anweisungen immer anhängen
+    system_parts.append(ARTIFACT_SYSTEM_PROMPT)
+
     messages = []
     if system_parts:
         messages.append({"role": "system", "content": "\n".join(system_parts)})
@@ -736,18 +940,21 @@ def build_messages(data: ChatRequest, rag_context: list = None) -> list:
 
 # ── Helper: Tool-Definitionen ────────────────────────────────────────
 
-def build_tools(tool_definitions: list = None, skill_slugs: list = None) -> list:
+def build_tools(tool_definitions: list = None, skill_slugs: list = None, include_artifact: bool = True) -> list:
     """
     Baut OpenAI Function Calling Tool-Definitionen.
     Bevorzugt die vom Laravel-Payload mitgelieferten Definitionen (tool_definitions).
     Fallback: Holt sie per HTTP von LARAVEL_SKILL_URL (für Rückwärtskompatibilität).
+    render_artifact wird immer automatisch angehängt.
     """
+    tools = []
+
     # Option A: Tool-Definitionen direkt aus dem Payload (bevorzugt)
     if tool_definitions:
         log.info("build_tools: %d Tool-Definitionen aus Payload (skills: %s)",
                  len(tool_definitions),
                  [t.get("function", {}).get("name") for t in tool_definitions])
-        return tool_definitions
+        tools = list(tool_definitions)
 
     # Fallback: Von Laravel per HTTP holen (nur wenn LARAVEL_SKILL_URL gesetzt)
     log.info("build_tools: Keine tool_definitions im Payload, versuche LARAVEL_SKILL_URL")
@@ -781,11 +988,20 @@ def build_tools(tool_definitions: list = None, skill_slugs: list = None) -> list
                     },
                 })
             log.info("build_tools: %d Tools via HTTP geladen", len(tools))
-            return tools
 
     except Exception as e:
         log.error("Skill-Definitionen laden Fehler: %s", str(e))
-        return []
+
+    # render_artifact immer anhängen (universeller HTML-Visualizer)
+    if include_artifact:
+        has_artifact = any(
+            t.get("function", {}).get("name") == "render_artifact" for t in tools
+        )
+        if not has_artifact:
+            tools.append(RENDER_ARTIFACT_TOOL)
+            log.info("build_tools: render_artifact Tool angehängt")
+
+    return tools
 
 
 # ── Helper: Skill bei Laravel ausführen ──────────────────────────────
@@ -800,6 +1016,8 @@ def execute_skill(skill_name: str, params: dict, user_id: int, chat_id: int = 0)
         return generate_image(params, user_id, chat_id)
     if skill_name == "pdf_generate":
         return generate_pdf(params, user_id, chat_id)
+    if skill_name == "delegate_to_assistant":
+        return _delegate_to_assistant(params, user_id, chat_id)
 
     try:
         skill_url = LARAVEL_SKILL_URL
@@ -817,7 +1035,10 @@ def execute_skill(skill_name: str, params: dict, user_id: int, chat_id: int = 0)
                 headers={"Authorization": f"Bearer {AI_GATEWAY_SECRET}"},
             )
             if resp.status_code == 200:
-                return resp.json()
+                result = resp.json()
+                # Artifact-Hints für strukturierte Skill-Ergebnisse
+                result = _inject_artifact_hint(skill_name, result)
+                return result
             else:
                 log.warning("Skill %s fehlgeschlagen: %d — %s", skill_name, resp.status_code, resp.text)
                 return {"error": f"Skill-Fehler: HTTP {resp.status_code}"}
@@ -825,6 +1046,22 @@ def execute_skill(skill_name: str, params: dict, user_id: int, chat_id: int = 0)
     except Exception as e:
         log.error("Skill %s Fehler: %s", skill_name, str(e))
         return {"error": str(e)}
+
+
+# Artifact-Hints für Skill-Ergebnisse — GPT bekommt Hinweise, wann ein Artifact sinnvoll ist
+SKILL_ARTIFACT_HINTS = {
+    "crm_search": "Stelle diese Ergebnisse als schöne interaktive HTML-Tabelle oder Karten dar. Verwende render_artifact. Links zu Kontakten: /crm/contacts/{id}, zu Deals: /crm/deals/{id}. Links sollen target=\"_top\" haben.",
+    "crm_update_deal": "Zeige die Deal-Änderungen als übersichtliche Karte mit render_artifact. Link zum Deal: /crm/deals/{deal_id}.",
+    "campaign_analyze": "Visualisiere die Kampagnen-Statistiken als KPI-Dashboard mit render_artifact (Balken, Prozent-Kreise o.ä.).",
+}
+
+
+def _inject_artifact_hint(skill_name: str, result: dict) -> dict:
+    """Fügt _artifact_hint in Skill-Ergebnisse ein, damit GPT weiß, dass ein Artifact sinnvoll wäre."""
+    hint = SKILL_ARTIFACT_HINTS.get(skill_name)
+    if hint and "error" not in result:
+        result["_artifact_hint"] = hint
+    return result
 
 
 # ── Helper: Bildgenerierung (Gateway-intercepted) ────────────────────
@@ -950,6 +1187,571 @@ def send_callback(url: str, payload: dict):
         log.error("Callback Fehler: %s", str(e))
 
 
+# ── Background Task Endpoint ─────────────────────────────────────────
+
+class TaskExecuteRequest(BaseModel):
+    job_id: int
+    user_id: int
+    chat_id: int
+    assistant_id: int
+    task_description: str
+    context: list = []              # Bisheriger Kontext / Schritt-History
+    system_prompt: str = ""
+    model: str = "gpt-4o"
+    temperature: float = 0.7
+    max_tokens: int = 4096
+    max_runtime_minutes: int = 30
+    confirmation_skills: list = []  # ["crm_update_deal", "crm_create_contact"]
+    skills: list = []               # Alle aktiven Skill-Slugs
+    tool_definitions: list = []     # OpenAI Tool-Definitionen
+    trainer_memories: list = []
+    notebook_ids: list = []
+    doc_processor_url: str = ""
+    doc_processor_secret: str = ""
+    callback_url: str = ""          # Laravel callback URL
+    execution_seconds: int = 0      # Bisherige kumulierte Laufzeit (bei Resume)
+    laravel_base_url: str = ""      # z.B. https://trainer.example.com/api/ai
+    trainer_branding: dict = None   # Trainer-Branding (Farben, Logo als Base64)
+
+
+@app.post("/task/execute")
+async def execute_task(request: Request, bg: BackgroundTasks):
+    """Startet autonome Background-Task-Verarbeitung."""
+    verify_auth(request)
+    body = await request.json()
+    data = TaskExecuteRequest(**body)
+    bg.add_task(task_pipeline, data)
+    return {"status": "accepted", "job_id": data.job_id}
+
+
+def task_pipeline(data: TaskExecuteRequest):
+    """
+    Autonome Schleife für Background Tasks:
+    1. Battery-Check vor jedem Schritt
+    2. GPT plant nächsten Schritt (LLM-Call mit Tools)
+    3. Falls Tool-Call: Prüfe ob Confirmation nötig → Pause oder Ausführen
+    4. Ausführungszeit prüfen
+    5. Wiederholen oder fertig
+    """
+    start_time = time.time()
+    execution_seconds = data.execution_seconds  # Resume-Wert
+    step_count = 0
+    max_steps = 50  # Sicherheitslimit
+    max_runtime = data.max_runtime_minutes * 60
+    step_history = list(data.context)  # Kopie
+    all_tool_calls = []
+    all_tool_results = []
+    total_usage = {"input_tokens": 0, "output_tokens": 0}
+
+    model = get_model_name(data.model)
+    base_url = data.laravel_base_url or LARAVEL_CALLBACK_URL.rsplit("/", 1)[0] if LARAVEL_CALLBACK_URL else ""
+
+    log.info("Task %d: Starte autonome Schleife (max %d min, %d bisherige Sek.)",
+             data.job_id, data.max_runtime_minutes, execution_seconds)
+
+    try:
+        # RAG-Kontext laden (einmalig am Anfang)
+        rag_context = []
+        if data.notebook_ids and data.doc_processor_url:
+            rag_context = search_documents(
+                query=data.task_description,
+                notebook_ids=data.notebook_ids,
+                doc_processor_url=data.doc_processor_url,
+                doc_processor_secret=data.doc_processor_secret,
+            )
+            log.info("Task %d: %d RAG-Chunks geladen", data.job_id, len(rag_context))
+
+        # System-Prompt für autonomen Modus erweitern
+        system_prompt = _build_task_system_prompt(data, rag_context)
+
+        # Tools vorbereiten
+        tools = build_tools(data.tool_definitions, data.skills) if data.skills else None
+
+        # Messages für die Schleife
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": f"Aufgabe: {data.task_description}"},
+        ]
+        # Bisherige Schritte als Kontext einfügen
+        for ctx in step_history:
+            if isinstance(ctx, dict) and "role" in ctx:
+                messages.append(ctx)
+            else:
+                messages.append({"role": "assistant", "content": str(ctx)})
+
+        while step_count < max_steps:
+            step_start = time.time()
+            step_count += 1
+            log.info("Task %d: Schritt %d (%.0f Sek. bisherig)", data.job_id, step_count, execution_seconds)
+
+            # ① Battery-Check
+            battery_ok = _check_battery(data.user_id, base_url)
+            if not battery_ok:
+                _task_callback_failed(data, execution_seconds, "Monatliches AI-Limit erreicht", base_url)
+                return
+
+            # ② GPT: Nächster Schritt
+            response = oai_client.chat.completions.create(
+                model=model,
+                messages=messages,
+                tools=tools,
+                temperature=data.temperature,
+                max_tokens=data.max_tokens,
+            )
+
+            choice = response.choices[0]
+            usage = response.usage
+            if usage:
+                total_usage["input_tokens"] += usage.prompt_tokens
+                total_usage["output_tokens"] += usage.completion_tokens
+
+            # ③ Kein Tool-Call → GPT ist fertig
+            if not choice.message.tool_calls:
+                content = choice.message.content or ""
+                step_duration = time.time() - step_start
+                execution_seconds += step_duration
+
+                log.info("Task %d: Fertig nach %d Schritten (%.0f Sek.)", data.job_id, step_count, execution_seconds)
+                _task_callback_complete(data, content, execution_seconds, total_usage, all_tool_calls, all_tool_results, base_url)
+                return
+
+            # ④ Tool-Calls verarbeiten
+            messages.append(choice.message)
+
+            for tc in choice.message.tool_calls:
+                tool_name = tc.function.name
+                tool_args = json.loads(tc.function.arguments)
+                log.info("Task %d: Tool-Call → %s", data.job_id, tool_name)
+
+                # render_artifact: Gateway-intercepted (kein Laravel-Call)
+                if tool_name == "render_artifact":
+                    artifact_title = tool_args.get("title", "Visualisierung")
+                    artifact_html = tool_args.get("html", "")
+                    log.info("Task %d: Artifact '%s' (%d bytes HTML)", data.job_id, artifact_title, len(artifact_html))
+                    all_tool_calls.append({"id": tc.id, "name": tool_name, "arguments": tool_args})
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc.id,
+                        "content": json.dumps({"success": True, "rendered": True, "title": artifact_title}, ensure_ascii=False),
+                    })
+                    continue
+
+                # Confirmation nötig?
+                if tool_name in data.confirmation_skills:
+                    # Timer pausieren: bisherige Laufzeit speichern
+                    step_duration = time.time() - step_start
+                    execution_seconds += step_duration
+
+                    description = _build_confirmation_description(tool_name, tool_args)
+                    log.info("Task %d: Confirmation nötig für %s — pausiert", data.job_id, tool_name)
+
+                    _task_request_confirmation(data, tool_name, tool_args, description, execution_seconds, base_url)
+                    return  # Pausiert — wird nach Bestätigung mit POST /task/execute neu gestartet
+
+                # Skill ausführen
+                all_tool_calls.append({"id": tc.id, "name": tool_name, "arguments": tool_args})
+                result = execute_skill(tool_name, tool_args, data.user_id, data.chat_id)
+                all_tool_results.append({"tool_call_id": tc.id, "name": tool_name, "result": result})
+
+                # Ergebnis für GPT aufbereiten (ohne große Binärdaten)
+                result_for_gpt = {k: v for k, v in result.items() if k not in ("_image_b64", "_pdf_b64")}
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc.id,
+                    "content": json.dumps(result_for_gpt, ensure_ascii=False),
+                })
+
+            # ⑤ Ausführungszeit prüfen
+            step_duration = time.time() - step_start
+            execution_seconds += step_duration
+
+            if execution_seconds >= max_runtime:
+                log.warning("Task %d: Max Ausführungszeit erreicht (%.0f Sek.)", data.job_id, execution_seconds)
+                _task_callback_failed(data, execution_seconds, "Maximale Ausführungszeit erreicht", base_url)
+                return
+
+            # ⑥ Execution time an Laravel melden (für Tracking)
+            _task_update_execution(data.job_id, execution_seconds, base_url)
+
+        # Sicherheitslimit erreicht
+        log.warning("Task %d: Max Schritte (%d) erreicht", data.job_id, max_steps)
+        _task_callback_failed(data, execution_seconds, f"Maximale Schrittanzahl ({max_steps}) erreicht", base_url)
+
+    except Exception as e:
+        log.error("Task %d: Fehler — %s", data.job_id, str(e))
+        elapsed = time.time() - start_time
+        _task_callback_failed(data, execution_seconds + elapsed, f"Fehler: {str(e)}", base_url)
+
+
+
+# ── Delegation / Orchestrierung (Phase 8.4) ──────────────────────────
+
+DELEGATION_TIMEOUT = 60  # Sekunden
+
+def _delegate_to_assistant(params: dict, user_id: int, chat_id: int) -> dict:
+    """
+    Nested Completion: Delegiert eine Teilaufgabe an einen anderen Assistenten.
+    1. Access-Check bei Laravel
+    2. Config des Ziel-Assistenten laden (prompt, skills, notebooks, memories)
+    3. Eigener LLM-Call mit Ziel-Assistent Profil
+    4. Ergebnis zurück an aufrufenden Assistenten
+    """
+    target_slug = params.get("target_assistant", "")
+    task = params.get("task", "")
+    context_data = params.get("context_data", {})
+
+    if not target_slug or not task:
+        return {"error": "target_assistant und task sind Pflichtfelder."}
+
+    base_url = LARAVEL_CALLBACK_URL.rsplit("/", 1)[0] if LARAVEL_CALLBACK_URL else ""
+    if not base_url:
+        return {"error": "Keine Laravel-URL konfiguriert für Delegation."}
+
+    log.info("Delegation: %s → %s (User %d, Chat %d)", "source", target_slug, user_id, chat_id)
+
+    # ① Access-Check
+    try:
+        with httpx.Client(timeout=10) as client:
+            resp = client.post(
+                f"{base_url}/check-assistant-access",
+                json={"user_id": user_id, "assistant_slug": target_slug},
+                headers={"Authorization": f"Bearer {AI_GATEWAY_SECRET}"},
+            )
+            if resp.status_code != 200:
+                return {"error": f"Access-Check fehlgeschlagen: HTTP {resp.status_code}"}
+            access = resp.json()
+            if not access.get("has_access"):
+                reason = access.get("reason", "Kein Zugriff")
+                return {"error": reason, "assistant_slug": target_slug}
+    except Exception as e:
+        log.error("Delegation Access-Check Fehler: %s", str(e))
+        return {"error": f"Access-Check Fehler: {str(e)}"}
+
+    log.info("Delegation: Access OK für %s (ID %d)", target_slug, access.get("assistant_id", 0))
+
+    # ② Config laden
+    try:
+        with httpx.Client(timeout=10) as client:
+            resp = client.post(
+                f"{base_url}/delegate-config",
+                json={"user_id": user_id, "assistant_slug": target_slug},
+                headers={"Authorization": f"Bearer {AI_GATEWAY_SECRET}"},
+            )
+            if resp.status_code != 200:
+                return {"error": f"Config-Laden fehlgeschlagen: HTTP {resp.status_code}"}
+            config = resp.json()
+    except Exception as e:
+        log.error("Delegation Config Fehler: %s", str(e))
+        return {"error": f"Config-Laden Fehler: {str(e)}"}
+
+    log.info("Delegation: Config geladen für %s — %d Skills, %d Notebooks",
+             target_slug, len(config.get("skills", [])), len(config.get("notebook_ids", [])))
+
+    # ③ System-Prompt für Ziel-Assistent bauen
+    system_parts = []
+    if config.get("system_prompt"):
+        system_parts.append(config["system_prompt"])
+
+    system_parts.append("""
+## Delegierte Aufgabe
+Du wurdest von einem anderen Assistenten beauftragt, eine spezifische Teilaufgabe zu erledigen.
+Konzentriere dich NUR auf die beschriebene Aufgabe.
+Gib ein klares, strukturiertes Ergebnis zurück.
+Falls du Dateien erstellst (PDFs, Bilder), gib die URLs im Ergebnis an.
+""")
+
+    # Trainer-Memories einfügen
+    memories = config.get("trainer_memories", [])
+    if memories:
+        mem_text = "\n".join(f"- [{m['category']}] {m['content']}" for m in memories)
+        system_parts.append(f"\n## Bekannte Informationen über den Trainer:\n{mem_text}")
+
+    # RAG: Dokumente suchen für den Ziel-Assistenten
+    rag_context = []
+    notebook_ids = config.get("notebook_ids", [])
+    doc_processor_url = config.get("doc_processor_url", "")
+    doc_processor_secret = config.get("doc_processor_secret", "")
+
+    if notebook_ids and doc_processor_url:
+        try:
+            rag_context = search_documents(
+                query=task,
+                notebook_ids=notebook_ids,
+                doc_processor_url=doc_processor_url,
+                doc_processor_secret=doc_processor_secret,
+            )
+            log.info("Delegation: %d RAG-Chunks für %s", len(rag_context), target_slug)
+        except Exception as e:
+            log.warning("Delegation RAG-Suche fehlgeschlagen: %s", str(e))
+
+    if rag_context:
+        rag_text = "\n\n".join(
+            f"[Quelle: {c.get('source', 'Unbekannt')}]\n{c.get('content', '')}"
+            for c in rag_context
+        )
+        system_parts.append(f"\n## Relevantes Wissen:\n{rag_text}")
+
+    system_prompt = "\n\n".join(system_parts)
+
+    # ④ Kontext-Nachricht für den Ziel-Assistenten
+    user_message = f"Aufgabe: {task}"
+    if context_data:
+        context_str = json.dumps(context_data, ensure_ascii=False, indent=2)
+        user_message += f"\n\nKontextdaten:\n```json\n{context_str}\n```"
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_message},
+    ]
+
+    # Tools für den Ziel-Assistenten (ohne delegate_to_assistant — Max 1 Tiefe!)
+    tools = config.get("tool_definitions", [])
+    model = get_model_name(config.get("model", "gpt-4o"))
+
+    # ⑤ LLM-Call mit Timeout und Tool-Loop
+    try:
+        max_iterations = 5
+        all_tool_calls = []
+
+        for iteration in range(max_iterations):
+            call_params = {
+                "model": model,
+                "messages": messages,
+                "temperature": config.get("temperature", 0.7),
+                "max_tokens": config.get("max_tokens", 4096),
+                "timeout": DELEGATION_TIMEOUT,
+            }
+            if tools and iteration < max_iterations - 1:
+                call_params["tools"] = tools
+                call_params["tool_choice"] = "auto"
+
+            log.info("Delegation %s: LLM-Call Iteration %d", target_slug, iteration)
+            response = oai_client.chat.completions.create(**call_params)
+            choice = response.choices[0]
+
+            # Kein Tool-Call → Ziel-Assistent ist fertig
+            if not choice.message.tool_calls:
+                break
+
+            # Tool-Calls verarbeiten
+            messages.append(choice.message)
+            for tc in choice.message.tool_calls:
+                tool_name = tc.function.name
+                tool_args = json.loads(tc.function.arguments)
+                log.info("Delegation %s: Tool-Call → %s", target_slug, tool_name)
+
+                # Sicherheit: delegate_to_assistant darf NICHT rekursiv aufgerufen werden
+                if tool_name == "delegate_to_assistant":
+                    result = {"error": "Delegation darf nicht rekursiv aufgerufen werden (max. 1 Tiefe)."}
+                else:
+                    result = execute_skill(tool_name, tool_args, user_id, chat_id)
+
+                all_tool_calls.append({"name": tool_name, "arguments": tool_args})
+
+                result_for_gpt = {k: v for k, v in result.items() if k not in ("_image_b64", "_pdf_b64")}
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc.id,
+                    "content": json.dumps(result_for_gpt, ensure_ascii=False),
+                })
+
+        content = choice.message.content or ""
+        log.info("Delegation %s: Fertig — %d Zeichen Ergebnis, %d Tool-Calls",
+                 target_slug, len(content), len(all_tool_calls))
+
+        return {
+            "status": "success",
+            "result": content,
+            "delegated_to": target_slug,
+            "assistant_name": config.get("assistant_name", target_slug),
+            "tool_calls_count": len(all_tool_calls),
+        }
+
+    except Exception as e:
+        log.error("Delegation %s LLM-Fehler: %s", target_slug, str(e))
+        return {
+            "error": f"Delegation an {target_slug} fehlgeschlagen: {str(e)}",
+            "delegated_to": target_slug,
+        }
+
+
+# ── Background Task Helper ──────────────────────────────────────────
+
+def _build_task_system_prompt(data: TaskExecuteRequest, rag_context: list) -> str:
+    """System-Prompt für autonomen Modus zusammenbauen."""
+    parts = []
+
+    if data.system_prompt:
+        parts.append(data.system_prompt)
+
+    parts.append("""
+## Autonomer Modus
+Du arbeitest im Hintergrund an einer Aufgabe. Plane Schritt für Schritt:
+1. Überlege was als nächstes getan werden muss
+2. Nutze die verfügbaren Tools um die Aufgabe zu erledigen
+3. Wenn du fertig bist, gib eine Zusammenfassung des Ergebnisses
+4. Sei effizient — minimiere die Anzahl der Schritte
+""")
+
+    # Trainer Memories
+    if data.trainer_memories:
+        memory_text = "\n".join(
+            f"- [{m['category']}] {m['content']}" for m in data.trainer_memories
+        )
+        parts.append(f"\n## Bekannte Informationen über den Trainer:\n{memory_text}")
+
+    # RAG-Kontext
+    if rag_context:
+        rag_text = "\n\n".join(
+            f"[Quelle: {c.get('source', 'Unbekannt')}]\n{c.get('content', '')}"
+            for c in rag_context
+        )
+        parts.append(f"\n## Relevantes Wissen:\n{rag_text}")
+
+    # Trainer-Branding
+    if data.trainer_branding:
+        b = data.trainer_branding
+        branding_lines = []
+        if b.get("company_name"):
+            branding_lines.append(f"- Firmenname: {b['company_name']}")
+        if b.get("primary_color"):
+            branding_lines.append(f"- Primärfarbe: {b['primary_color']}")
+        if b.get("secondary_color"):
+            branding_lines.append(f"- Sekundärfarbe: {b['secondary_color']}")
+        if b.get("accent_color"):
+            branding_lines.append(f"- Akzentfarbe: {b['accent_color']}")
+        if b.get("font_family"):
+            branding_lines.append(f"- Schriftart: {b['font_family']}")
+        if b.get("logo_base64") and b.get("logo_mime_type"):
+            branding_lines.append(f"- Logo: data:{b['logo_mime_type']};base64,{b['logo_base64']}")
+            branding_lines.append("  (Verwende diesen Data-URI direkt als <img src=\"...\"> in HTML/PDF-Artefakten)")
+        if branding_lines:
+            parts.append(
+                "\n## Trainer-Branding\n"
+                "Verwende diese Branding-Informationen wenn du PDFs, HTML-Artefakte oder Dokumente erstellst:\n"
+                + "\n".join(branding_lines)
+            )
+
+    return "\n\n".join(parts)
+
+
+def _check_battery(user_id: int, base_url: str) -> bool:
+    """Battery-Check bei Laravel."""
+    try:
+        url = f"{base_url}/battery-check"
+        with httpx.Client(timeout=10) as client:
+            resp = client.post(
+                url,
+                json={"user_id": user_id},
+                headers={"Authorization": f"Bearer {AI_GATEWAY_SECRET}"},
+            )
+            if resp.status_code == 200:
+                result = resp.json()
+                return result.get("has_capacity", False)
+            log.warning("Battery-Check fehlgeschlagen: %d", resp.status_code)
+            return False
+    except Exception as e:
+        log.error("Battery-Check Fehler: %s", str(e))
+        return False  # Bei Fehler sicherheitshalber stoppen
+
+
+def _build_confirmation_description(tool_name: str, tool_args: dict) -> str:
+    """Menschenlesbare Beschreibung einer Skill-Aktion."""
+    descriptions = {
+        "crm_create_contact": "Neuen Kontakt im CRM anlegen",
+        "crm_update_deal": "Deal im CRM aktualisieren",
+        "crm_create_followup": "Follow-Up im CRM erstellen",
+    }
+    base = descriptions.get(tool_name, f"Skill '{tool_name}' ausführen")
+    details = ", ".join(f"{k}={v}" for k, v in tool_args.items() if not str(v).startswith("base64"))
+    return f"{base}: {details}" if details else base
+
+
+def _task_request_confirmation(data: TaskExecuteRequest, skill: str, params: dict, description: str, execution_seconds: float, base_url: str):
+    """Sendet Confirmation-Request an Laravel → Job wird pausiert."""
+    try:
+        url = f"{base_url}/task/confirm-request"
+        with httpx.Client(timeout=15) as client:
+            resp = client.post(
+                url,
+                json={
+                    "job_id": data.job_id,
+                    "skill": skill,
+                    "params": params,
+                    "description": description,
+                    "execution_seconds": int(execution_seconds),
+                },
+                headers={"Authorization": f"Bearer {AI_GATEWAY_SECRET}"},
+            )
+            if resp.status_code != 200:
+                log.warning("Confirm-Request fehlgeschlagen: %d — %s", resp.status_code, resp.text[:500])
+    except Exception as e:
+        log.error("Confirm-Request Fehler: %s", str(e))
+
+
+def _task_update_execution(job_id: int, execution_seconds: float, base_url: str):
+    """Execution-Time Update an Laravel."""
+    try:
+        url = f"{base_url}/task/update-execution"
+        with httpx.Client(timeout=10) as client:
+            client.post(
+                url,
+                json={"job_id": job_id, "execution_seconds": int(execution_seconds)},
+                headers={"Authorization": f"Bearer {AI_GATEWAY_SECRET}"},
+            )
+    except Exception as e:
+        log.error("Execution-Update Fehler: %s", str(e))
+
+
+def _task_callback_complete(data: TaskExecuteRequest, content: str, execution_seconds: float, usage: dict, tool_calls: list, tool_results: list, base_url: str):
+    """Task erfolgreich abgeschlossen → Callback an Laravel."""
+    try:
+        url = f"{base_url}/task/complete"
+        with httpx.Client(timeout=30) as client:
+            resp = client.post(
+                url,
+                json={
+                    "job_id": data.job_id,
+                    "chat_id": data.chat_id,
+                    "content": content,
+                    "execution_seconds": int(execution_seconds),
+                    "usage": usage,
+                    "tool_calls": tool_calls or None,
+                    "tool_results": tool_results or None,
+                },
+                headers={"Authorization": f"Bearer {AI_GATEWAY_SECRET}"},
+            )
+            if resp.status_code != 200:
+                log.warning("Task-Complete Callback fehlgeschlagen: %d — %s", resp.status_code, resp.text[:500])
+            else:
+                log.info("Task %d: Complete-Callback gesendet", data.job_id)
+    except Exception as e:
+        log.error("Task-Complete Callback Fehler: %s", str(e))
+
+
+def _task_callback_failed(data: TaskExecuteRequest, execution_seconds: float, reason: str, base_url: str):
+    """Task fehlgeschlagen → Callback an Laravel."""
+    try:
+        url = f"{base_url}/task/failed"
+        with httpx.Client(timeout=15) as client:
+            resp = client.post(
+                url,
+                json={
+                    "job_id": data.job_id,
+                    "chat_id": data.chat_id,
+                    "reason": reason,
+                    "execution_seconds": int(execution_seconds),
+                },
+                headers={"Authorization": f"Bearer {AI_GATEWAY_SECRET}"},
+            )
+            if resp.status_code != 200:
+                log.warning("Task-Failed Callback fehlgeschlagen: %d — %s", resp.status_code, resp.text[:500])
+            else:
+                log.info("Task %d: Failed-Callback gesendet (%s)", data.job_id, reason)
+    except Exception as e:
+        log.error("Task-Failed Callback Fehler: %s", str(e))
+
+
 # ── Memory-Extraktion Endpoint ───────────────────────────────────────
 
 class MemoryExtractionRequest(BaseModel):
@@ -1038,3 +1840,126 @@ def memory_extraction_pipeline(data: MemoryExtractionRequest):
     except Exception as e:
         log.error("Memory-Extraktion Chat %d Fehler: %s", data.chat_id, str(e))
 
+
+# ── Prompt Builder ──────────────────────────────────────────────────
+
+BUILDER_SYSTEM_PROMPT = """Du bist ein Experte für Prompt-Engineering. Der Benutzer verbessert den System-Prompt eines KI-Assistenten durch natürliche Sprache.
+
+DEINE AUFGABE:
+1. Verstehe was der Benutzer möchte (Verhalten, Tonalität, Fähigkeiten, Einschränkungen etc.)
+2. Schlage einen verbesserten System-Prompt vor
+3. Erkläre kurz was du geändert hast
+
+REGELN:
+- Antworte IMMER auf Deutsch
+- Gib den vorgeschlagenen Prompt IMMER innerhalb von <proposed_prompt>...</proposed_prompt> Tags aus
+- Gib eine kurze Zusammenfassung der Änderung in <change_summary>...</change_summary> Tags aus
+- Der vorgeschlagene Prompt soll professionell, klar strukturiert und effektiv sein
+- Wenn der aktuelle Prompt leer ist, erstelle einen komplett neuen basierend auf der Beschreibung
+- Behalte bestehende gute Aspekte bei und verbessere/erweitere nur was nötig ist
+- Schreibe den Prompt in der Du-Form an die KI gerichtet ("Du bist...", "Du hilfst...")
+
+BEISPIEL-ANTWORT:
+Ich habe den Prompt angepasst und folgende Änderungen vorgenommen:
+- Tonalität auf formeller gestellt
+- Zielgruppe konkretisiert
+
+<change_summary>Tonalität formeller, Zielgruppe konkretisiert</change_summary>
+
+<proposed_prompt>
+Du bist ein professioneller Berater für Führungskräfte...
+</proposed_prompt>"""
+
+
+class BuilderChatRequest(BaseModel):
+    assistant_id: int
+    current_system_prompt: str = ""
+    assistant_name: str = ""
+    assistant_description: str = ""
+    message: str
+    conversation_history: list = []  # Bisheriger Builder-Chat-Verlauf
+    model: str = "gpt-4o"
+
+
+@app.post("/builder/chat")
+async def builder_chat(request: Request):
+    """
+    Prompt-Builder: Meta-Assistent der System-Prompts iterativ verbessert.
+    Synchroner Call — gibt sofort die Antwort zurück.
+    """
+    verify_auth(request)
+    try:
+        body = await request.json()
+    except (ValueError, json.JSONDecodeError):
+        raise HTTPException(400, "Invalid JSON")
+
+    data = BuilderChatRequest(**body)
+    log.info("Builder chat: assistant_id=%d", data.assistant_id)
+
+    # Kontext für den Meta-Assistenten aufbauen
+    context_parts = []
+    if data.assistant_name:
+        context_parts.append(f"Assistenten-Name: {data.assistant_name}")
+    if data.assistant_description:
+        context_parts.append(f"Beschreibung: {data.assistant_description}")
+    context_parts.append(f"Aktueller System-Prompt:\n```\n{data.current_system_prompt or '(leer — noch kein Prompt definiert)'}\n```")
+    context = "\n".join(context_parts)
+
+    messages = [
+        {"role": "system", "content": BUILDER_SYSTEM_PROMPT},
+        {"role": "user", "content": f"Kontext zum Assistenten:\n{context}"},
+    ]
+
+    # Bisherigen Builder-Chat-Verlauf hinzufügen
+    for msg in data.conversation_history:
+        messages.append({
+            "role": msg.get("role", "user"),
+            "content": msg.get("content", ""),
+        })
+
+    # Aktuelle Nachricht
+    messages.append({"role": "user", "content": data.message})
+
+    try:
+        model = get_model_name(data.model)
+        response = oai_client.chat.completions.create(
+            model=model,
+            messages=messages,
+            temperature=0.7,
+            max_tokens=4000,
+        )
+
+        reply = response.choices[0].message.content or ""
+
+        # Proposed prompt und change summary extrahieren
+        proposed_prompt = None
+        change_summary = None
+
+        if "<proposed_prompt>" in reply and "</proposed_prompt>" in reply:
+            proposed_prompt = reply.split("<proposed_prompt>")[1].split("</proposed_prompt>")[0].strip()
+
+        if "<change_summary>" in reply and "</change_summary>" in reply:
+            change_summary = reply.split("<change_summary>")[1].split("</change_summary>")[0].strip()
+
+        # Tags aus der sichtbaren Antwort entfernen für saubere Chat-Darstellung
+        clean_reply = reply
+        if "<proposed_prompt>" in clean_reply:
+            clean_reply = clean_reply.split("<proposed_prompt>")[0] + clean_reply.split("</proposed_prompt>")[-1]
+        if "<change_summary>" in clean_reply:
+            clean_reply = clean_reply.split("<change_summary>")[0] + clean_reply.split("</change_summary>")[-1]
+        clean_reply = clean_reply.strip()
+
+        return {
+            "reply": clean_reply,
+            "proposed_prompt": proposed_prompt,
+            "change_summary": change_summary,
+            "usage": {
+                "input_tokens": response.usage.prompt_tokens if response.usage else 0,
+                "output_tokens": response.usage.completion_tokens if response.usage else 0,
+            },
+            "model": model,
+        }
+
+    except Exception as e:
+        log.error("Builder chat error: %s", str(e))
+        raise HTTPException(500, f"Builder error: {str(e)}")
