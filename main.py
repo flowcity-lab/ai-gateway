@@ -122,6 +122,7 @@ class ChatRequest(BaseModel):
     conversation_history: list = []
     trainer_memories: list = []
     skills: list = []
+    tool_definitions: list = []       # Fertige OpenAI Tool-Definitionen von Laravel
     callback_url: str = ""
     mode: str = "async"  # "async" (default) oder "sync"
     # RAG-Konfiguration
@@ -246,7 +247,7 @@ async def stream_chat_generator(data: ChatRequest):
             )
 
         messages = build_messages(data, rag_context=rag_context)
-        tools = build_tools(data.skills) if data.skills else None
+        tools = build_tools(data.tool_definitions, data.skills) if data.skills else None
         max_iterations = 5
 
         # Tool-Call-Loop (nicht-gestreamt — nur finale Antwort wird gestreamt)
@@ -387,7 +388,7 @@ def chat_pipeline_sync(data: ChatRequest) -> dict:
             log.info("Chat %d [sync]: %d RAG-Chunks gefunden", data.chat_id, len(rag_context))
 
         messages = build_messages(data, rag_context=rag_context)
-        tools = build_tools(data.skills) if data.skills else None
+        tools = build_tools(data.tool_definitions, data.skills) if data.skills else None
         model = get_model_name(data.model)
         all_tool_calls = []
         all_tool_results = []
@@ -489,7 +490,7 @@ def chat_pipeline(data: ChatRequest):
         messages = build_messages(data, rag_context=rag_context)
 
         # 2. Tool-Definitionen (OpenAI Function Calling Format)
-        tools = build_tools(data.skills) if data.skills else None
+        tools = build_tools(data.tool_definitions, data.skills) if data.skills else None
 
         # 3. LLM-Call (mit Tool-Call-Loop)
         model = get_model_name(data.model)
@@ -673,33 +674,40 @@ def build_messages(data: ChatRequest, rag_context: list = None) -> list:
 
 # ── Helper: Tool-Definitionen ────────────────────────────────────────
 
-def build_tools(skill_slugs: list) -> list:
+def build_tools(tool_definitions: list = None, skill_slugs: list = None) -> list:
     """
     Baut OpenAI Function Calling Tool-Definitionen.
-    Holt die Skill-Definitionen von Laravel.
+    Bevorzugt die vom Laravel-Payload mitgelieferten Definitionen (tool_definitions).
+    Fallback: Holt sie per HTTP von LARAVEL_SKILL_URL (für Rückwärtskompatibilität).
     """
-    log.info("build_tools aufgerufen mit skills: %s", skill_slugs)
+    # Option A: Tool-Definitionen direkt aus dem Payload (bevorzugt)
+    if tool_definitions:
+        log.info("build_tools: %d Tool-Definitionen aus Payload (skills: %s)",
+                 len(tool_definitions),
+                 [t.get("function", {}).get("name") for t in tool_definitions])
+        return tool_definitions
+
+    # Fallback: Von Laravel per HTTP holen (nur wenn LARAVEL_SKILL_URL gesetzt)
+    log.info("build_tools: Keine tool_definitions im Payload, versuche LARAVEL_SKILL_URL")
     try:
         skill_url = LARAVEL_SKILL_URL
         if not skill_url:
             log.warning("build_tools: LARAVEL_SKILL_URL ist leer — keine Tools verfügbar")
             return []
 
-        log.info("build_tools: Lade Skill-Definitionen von %s", skill_url)
+        slugs = skill_slugs or []
+        log.info("build_tools: Lade Skill-Definitionen von %s (skills: %s)", skill_url, slugs)
         with httpx.Client(timeout=10) as client:
             resp = client.get(
                 skill_url,
                 headers={"Authorization": f"Bearer {AI_GATEWAY_SECRET}"},
-                params={"skills": ",".join(skill_slugs)},
+                params={"skills": ",".join(slugs)},
             )
             if resp.status_code != 200:
                 log.warning("Skill-Definitionen laden fehlgeschlagen: %d — %s", resp.status_code, resp.text[:500])
                 return []
 
             skills_data = resp.json()
-            log.info("build_tools: Laravel liefert %d Skills: %s",
-                     len(skills_data.get("skills", [])),
-                     [s.get("name") for s in skills_data.get("skills", [])])
             tools = []
             for skill in skills_data.get("skills", []):
                 tools.append({
@@ -710,7 +718,7 @@ def build_tools(skill_slugs: list) -> list:
                         "parameters": skill.get("parameters", {"type": "object", "properties": {}}),
                     },
                 })
-            log.info("build_tools: %d Tools gebaut", len(tools))
+            log.info("build_tools: %d Tools via HTTP geladen", len(tools))
             return tools
 
     except Exception as e:
