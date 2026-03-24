@@ -842,14 +842,6 @@ def generate_image(params: dict, user_id: int, chat_id: int) -> dict:
         return {"error": f"Bildgenerierung fehlgeschlagen: {str(e)}"}
 
 
-def _get_image_save_url() -> str:
-    """Leitet die Image-Save-URL aus LARAVEL_CALLBACK_URL ab."""
-    if not LARAVEL_CALLBACK_URL:
-        return ""
-    # /api/ai/callback → /api/ai/image-save
-    return LARAVEL_CALLBACK_URL.rsplit("/callback", 1)[0] + "/image-save"
-
-
 # ── Helper: Callback an Laravel ──────────────────────────────────────
 
 def send_callback(url: str, payload: dict):
