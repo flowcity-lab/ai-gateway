@@ -594,276 +594,91 @@ Du hast das Tool `render_artifact` zur Verfügung, mit dem du **interaktive, kre
 
 **Cards:** `.card` (Glassmorphism), `.card-flat`, `.card-accent` (linke Border), `.card-glass` (extra Blur), `.card-gradient` (primärer Gradient-Hintergrund, weißer Text)
 
-**KPI/Metrics:**
-```html
-<div class="grid cols-3 gap-4">
-  <div class="kpi animate-in animate-in-1">
-    <div class="kpi-icon">📊</div>
-    <div class="kpi-value">1.247</div>
-    <div class="kpi-label">Kontakte</div>
-    <div class="kpi-trend up">↑ 12%</div>
-  </div>
-  <div class="kpi animate-in animate-in-2">
-    <div class="kpi-icon">💰</div>
-    <div class="kpi-value">€84.500</div>
-    <div class="kpi-label">Pipeline</div>
-    <div class="kpi-trend up">↑ 23%</div>
-  </div>
-  <div class="kpi animate-in animate-in-3">
-    <div class="kpi-icon">🎯</div>
-    <div class="kpi-value">92%</div>
-    <div class="kpi-label">Abschlussrate</div>
-    <div class="kpi-trend down">↓ 3%</div>
-  </div>
-</div>
-```
-
-**Tabellen:**
-```html
-<div class="table-wrap">
-  <table>
-    <thead><tr><th>Name</th><th>Status</th><th>Wert</th></tr></thead>
-    <tbody>
-      <tr><td><strong>Max Müller</strong><br><span class="text-xs text-muted">max@example.com</span></td><td><span class="badge badge-success badge-dot">Aktiv</span></td><td class="font-semibold">€12.500</td></tr>
-    </tbody>
-  </table>
-</div>
-```
-
-**Badges:** `.badge .badge-primary/.success/.warning/.danger/.info/.neutral`, `.badge-dot` (mit farbigem Punkt)
-
-**Score/Rating:** `.score-ring` (runder Score), `.score-ring.lg`, `.stars` (⭐-Bewertung)
-
-**Progress:** `.progress` + `.progress-bar` (Gradient!), `.progress-lg`, `.progress-bar.success/.warning/.danger`
-
-**Stat Rows:** `.stat-row` > `.label` + `.value` (Key-Value Zeilen)
-
-**Bar Charts:**
-```html
-<div class="bar-chart">
-  <div class="bar" style="height:85%"><span class="bar-value">85</span><span class="bar-label">Jan</span></div>
-  <div class="bar" style="height:62%"><span class="bar-value">62</span><span class="bar-label">Feb</span></div>
-  <div class="bar secondary" style="height:74%"><span class="bar-value">74</span><span class="bar-label">Mär</span></div>
-</div>
-```
-
+**KPI:** `.kpi` > `.kpi-icon` + `.kpi-value` + `.kpi-label` + `.kpi-trend.up/.down/.neutral`
+**Tabellen:** `.table-wrap` > `table` (sticky Header, hover, Zebra)
+**Badges:** `.badge .badge-primary/.success/.warning/.danger/.info/.neutral`, `.badge-dot`
+**Score:** `.score-ring` (`.lg`), `.stars`
+**Progress:** `.progress` + `.progress-bar` (`.success/.warning/.danger`), `.progress-lg`
+**Stat Rows:** `.stat-row` > `.label` + `.value`
+**Bar Charts:** `.bar-chart` > `.bar` (style="height:X%") > `.bar-value` + `.bar-label`, `.bar.secondary/.accent`
 **Timeline:** `.timeline` > `.timeline-item` (`.done`/`.pending`) > `.timeline-date` + content
-
 **Alerts:** `.alert .alert-info/.success/.warning/.danger`
 **Lists:** `.list` > `.list-item` > `.list-icon` + `.list-content`
-**Tabs:** `.tabs` > `.tab` (`.active`), `.tab-content` (`.active` zum Anzeigen)
-**Tags:** `.tag`
-**Divider:** `<hr class="divider">`
+**Tabs:** `.tabs` > `.tab` (`.active`), `.tab-content` (`.active`)
+**Tags:** `.tag`  **Divider:** `<hr class="divider">`
 **Buttons:** `.btn .btn-primary/.btn-secondary/.btn-accent`, `.btn-sm/.btn-lg`, `.btn-group`, `.btn-toggle` (`.active`)
 **Panels:** `.panel` > `.panel-header` + `.panel-body`
-**Interactive:** `input[type="range"]` (automatisch gestylt!), `input[type="number/text"]`, `select` (automatisch gestylt!)
-**Text-Highlighting:** `.text-highlight-primary/.success/.danger/.warning/.accent`
-**Vergleich:** `.side-by-side` (2-Spalten), `.pro-contra` > `.pro-list` + `.contra-list`
-**Animations:** `.animate-in .animate-in-1` bis `.animate-in-7` (IMMER verwenden!), `.animate-slide`, `.animate-slide-up`, `.animate-scale`, `.animate-glow` — Bars/Progress/Score-Ring animieren automatisch
-**Accent:** `.text-accent`, `.badge-accent`, `.bar.accent`, `.kpi.accent`, `.highlight`, `.accent-bar`, `.card-accent-top`, `.score-ring.accent`
+**Inputs:** `input[type="range/number/text"]`, `select` — automatisch gestylt
+**Text-Highlight:** `.text-highlight-primary/.success/.danger/.warning/.accent`
+**Vergleich:** `.side-by-side`, `.pro-contra` > `.pro-list` + `.contra-list`
+**Animations:** `.animate-in .animate-in-1` bis `.animate-in-7` (IMMER!), `.animate-slide`, `.animate-slide-up`, `.animate-scale`, `.animate-glow`
+**Accent:** `.text-accent`, `.badge-accent`, `.bar.accent`, `.kpi.accent`, `.highlight`, `.accent-bar`, `.card-accent-top`
 **Utility:** `.rounded/.rounded-sm/.rounded-full`, `.shadow/.shadow-md/.shadow-lg`, `.border .border-b`, `.opacity-75/.opacity-50`
 
-### Gold-Standard Beispiele — verschiedene Artifact-Typen:
-
-#### Typ 1: Dashboard (für Daten/CRM/Metriken)
-```html
-<meta charset="utf-8">
-<div class="p-4">
-  <div class="flex items-center justify-between mb-4 animate-in">
-    <div><h2 class="mb-1">📊 Verkaufs-Dashboard</h2><p class="text-sm text-muted">Übersicht Q1 2026</p></div>
-    <div class="score-ring animate-scale">87</div>
-  </div>
-  <div class="grid cols-4 gap-4 mb-6">
-    <div class="kpi animate-in animate-in-1"><div class="kpi-icon">💰</div><div class="kpi-value">€247.800</div><div class="kpi-label">Umsatz</div><div class="kpi-trend up">↑ 18%</div></div>
-    <div class="kpi animate-in animate-in-2"><div class="kpi-icon">🤝</div><div class="kpi-value">34</div><div class="kpi-label">Abschlüsse</div><div class="kpi-trend up">↑ 6</div></div>
-    <!-- ... weitere KPIs, Charts, Tabellen ... -->
-  </div>
-</div>
-```
-
-#### Typ 2: Interaktiver Explorer (für Lern-/Erklär-Themen) — WICHTIG!
+### Gold-Standard: Interaktiver Explorer (WICHTIGSTES Muster!)
+Zeigt das State-Pattern: Slider steuern Werte → update() rendert DOM neu → Text-Opacity/Score ändern sich live.
 ```html
 <meta charset="utf-8">
 <style>
-  .explorer-text { line-height: 1.8; font-size: 0.95rem; }
-  .explorer-text span[data-type] { padding: 2px 6px; border-radius: 4px; transition: all 0.3s; cursor: default; }
-  .explorer-text span[data-type="ethos"] { background: rgba(99,102,241,0.08); border-bottom: 2px solid var(--primary); }
-  .explorer-text span[data-type="pathos"] { background: rgba(239,68,68,0.08); border-bottom: 2px solid var(--danger); }
-  .explorer-text span[data-type="logos"] { background: rgba(16,185,129,0.08); border-bottom: 2px solid var(--success); }
-  .control-group { display: flex; align-items: center; gap: 1rem; padding: 0.5rem 0; }
-  .control-group label { min-width: 80px; font-weight: 600; font-size: 0.85rem; }
-  .control-group input[type="range"] { flex: 1; accent-color: var(--primary); height: 6px; }
-  .control-group .val { min-width: 40px; text-align: right; font-weight: 700; font-family: var(--font-mono); }
-  .concept-card { padding: 1rem; border-radius: var(--radius-sm); border: 1px solid var(--border); transition: all 0.3s; }
-  .concept-card.active { transform: scale(1.02); box-shadow: var(--shadow-md); }
-  .effectiveness-fill { height: 8px; border-radius: 4px; transition: width 0.5s, background 0.3s; }
+  .explorer-text span[data-type]{padding:2px 6px;border-radius:4px;transition:all 0.3s;cursor:default}
+  .explorer-text span[data-type="a"]{background:rgba(99,102,241,0.08);border-bottom:2px solid var(--primary)}
+  .explorer-text span[data-type="b"]{background:rgba(239,68,68,0.08);border-bottom:2px solid var(--danger)}
+  .eff-fill{height:8px;border-radius:4px;transition:width 0.5s,background 0.3s}
 </style>
 <div class="p-4">
-  <div class="animate-in mb-4">
-    <h2>🎭 Rhetorik-Explorer</h2>
-    <p class="text-sm text-muted">Verschiebe die Regler und beobachte wie sich die Gewichtung auswirkt</p>
-  </div>
+  <h2 class="animate-in">🎭 Rhetorik-Explorer</h2>
+  <p class="text-sm text-muted mb-4 animate-in">Verschiebe die Regler</p>
   <div class="card-glass p-4 mb-4 animate-in animate-in-1">
-    <div class="section-title">Gewichtung der Elemente</div>
-    <div class="control-group"><label style="color:var(--primary)">● Ethos</label><input type="range" min="0" max="100" value="40" data-key="ethos"><span class="val" id="v-ethos">40%</span></div>
-    <div class="control-group"><label style="color:var(--danger)">● Pathos</label><input type="range" min="0" max="100" value="35" data-key="pathos"><span class="val" id="v-pathos">35%</span></div>
-    <div class="control-group"><label style="color:var(--success)">● Logos</label><input type="range" min="0" max="100" value="25" data-key="logos"><span class="val" id="v-logos">25%</span></div>
+    <div class="section-title">Gewichtung</div>
+    <div style="display:flex;align-items:center;gap:1rem;padding:0.5rem 0"><label style="min-width:80px;font-weight:600;color:var(--primary)">● Ethos</label><input type="range" min="0" max="100" value="40" data-key="ethos"><span class="mono font-bold" id="v-ethos">40%</span></div>
+    <div style="display:flex;align-items:center;gap:1rem;padding:0.5rem 0"><label style="min-width:80px;font-weight:600;color:var(--danger)">● Pathos</label><input type="range" min="0" max="100" value="35" data-key="pathos"><span class="mono font-bold" id="v-pathos">35%</span></div>
   </div>
   <div class="card p-4 mb-4 animate-in animate-in-2">
-    <div class="section-title">Beispielrede — Klimaschutz</div>
-    <div class="explorer-text" id="speech">
-      <p><span data-type="ethos">Als Wissenschaftler mit zwei Jahrzehnten Forschung stehe ich vor Ihnen.</span> <span data-type="logos">Die Datenlage ist eindeutig: 2023 war das wärmste Jahr seit Beginn der Aufzeichnungen.</span> <span data-type="pathos">Denken Sie an Ihre Kinder — welche Welt hinterlassen wir ihnen?</span></p>
-    </div>
+    <div class="explorer-text"><span data-type="a">Als Wissenschaftler stehe ich vor Ihnen.</span> <span data-type="b">Denken Sie an Ihre Kinder!</span></div>
   </div>
-  <div class="flex items-center justify-between card-glass p-4 animate-in animate-in-3">
-    <div><div class="text-xs text-muted mb-1">Rhetorische Wirksamkeit</div><div class="text-2xl font-bold text-gradient" id="score">67</div></div>
-    <div style="flex:1;margin:0 1.5rem"><div class="effectiveness-fill" id="eff-bar" style="width:67%;background:var(--gradient)"></div></div>
-    <div class="text-sm text-muted">/100</div>
+  <div class="card-glass p-4 animate-in animate-in-3">
+    <span class="text-xs text-muted">Wirksamkeit</span> <span class="text-2xl font-bold text-gradient" id="score">67</span><span class="text-sm text-muted">/100</span>
+    <div class="eff-fill" id="eff" style="width:67%;background:var(--gradient);margin-top:0.5rem"></div>
   </div>
 </div>
 <script>
 (function(){
-  const state = {ethos:40, pathos:35, logos:25};
-  function calcScore(){ const bal=100-Math.max(Math.abs(state.ethos-state.pathos),Math.abs(state.pathos-state.logos),Math.abs(state.ethos-state.logos)); const total=state.ethos+state.pathos+state.logos; return total===0?0:Math.round(bal*(total/300)*100)/100; }
+  const state={ethos:40,pathos:35};
   function update(){
-    ['ethos','pathos','logos'].forEach(k=>{document.getElementById('v-'+k).textContent=state[k]+'%';});
-    const s=calcScore(); document.getElementById('score').textContent=Math.round(s);
-    const bar=document.getElementById('eff-bar'); bar.style.width=s+'%';
-    bar.style.background=s>60?'var(--gradient)':s>30?'var(--warning)':'var(--danger)';
-    document.querySelectorAll('[data-type]').forEach(el=>{const v=state[el.dataset.type]; el.style.opacity=0.3+v/100*0.7; el.style.fontWeight=v>50?'600':'400';});
+    Object.keys(state).forEach(k=>{document.getElementById('v-'+k).textContent=state[k]+'%'});
+    const s=Math.round((state.ethos+state.pathos)/2); document.getElementById('score').textContent=s;
+    document.getElementById('eff').style.width=s+'%';
+    document.querySelectorAll('[data-type]').forEach(el=>{const v=state[el.dataset.type==='a'?'ethos':'pathos'];el.style.opacity=0.3+v/100*0.7});
   }
-  document.querySelectorAll('input[type="range"]').forEach(sl=>{sl.addEventListener('input',e=>{state[e.target.dataset.key]=parseInt(e.target.value);update();});});
+  document.querySelectorAll('input[type="range"]').forEach(sl=>sl.addEventListener('input',e=>{state[e.target.dataset.key]=+e.target.value;update()}));
   update();
 })();
 </script>
 ```
 
-#### Typ 3: Rechner/Simulator (für Berechnungen)
-```html
-<meta charset="utf-8">
-<style>
-  .calc-input { display: flex; align-items: center; gap: 1rem; margin-bottom: 0.75rem; }
-  .calc-input label { min-width: 140px; font-size: 0.85rem; color: var(--text-secondary); }
-  .calc-input input { flex: 1; padding: 0.5rem 0.75rem; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); font-size: 1rem; font-family: var(--font-mono); background: var(--bg-subtle); color: var(--text); outline: none; }
-  .calc-input input:focus { border-color: var(--primary); box-shadow: 0 0 0 3px rgba(99,102,241,0.1); }
-  .result-card { background: var(--gradient); border-radius: var(--radius); padding: 1.5rem; color: #fff; text-align: center; }
-  .result-value { font-size: 2.5rem; font-weight: 800; }
-  .result-label { opacity: 0.8; font-size: 0.85rem; margin-top: 0.25rem; }
-</style>
-<div class="p-4">
-  <h2 class="animate-in mb-1">🧮 ROI-Rechner</h2>
-  <p class="text-sm text-muted mb-4 animate-in">Berechne deinen Return on Investment live</p>
-  <div class="card-glass p-4 mb-4 animate-in animate-in-1">
-    <div class="calc-input"><label>Investition (€)</label><input type="number" id="invest" value="10000" step="1000"></div>
-    <div class="calc-input"><label>Erwarteter Gewinn (€)</label><input type="number" id="gain" value="15000" step="1000"></div>
-    <div class="calc-input"><label>Zeitraum (Monate)</label><input type="number" id="months" value="12" min="1" max="60"></div>
-  </div>
-  <div class="grid cols-3 gap-4 animate-in animate-in-2">
-    <div class="result-card"><div class="result-value" id="roi">50%</div><div class="result-label">ROI</div></div>
-    <div class="card text-center p-4"><div class="kpi-value" id="profit">€5.000</div><div class="kpi-label">Nettogewinn</div></div>
-    <div class="card text-center p-4"><div class="kpi-value" id="monthly">€417</div><div class="kpi-label">pro Monat</div></div>
-  </div>
-</div>
-<script>
-(function(){
-  function calc(){
-    const inv=parseFloat(document.getElementById('invest').value)||0;
-    const gain=parseFloat(document.getElementById('gain').value)||0;
-    const months=parseInt(document.getElementById('months').value)||1;
-    const profit=gain-inv; const roi=inv>0?((profit/inv)*100):0; const monthly=months>0?(profit/months):0;
-    document.getElementById('roi').textContent=roi.toFixed(1)+'%';
-    document.getElementById('profit').textContent='€'+profit.toLocaleString('de-DE');
-    document.getElementById('monthly').textContent='€'+Math.round(monthly).toLocaleString('de-DE');
-  }
-  document.querySelectorAll('input').forEach(i=>i.addEventListener('input',calc));
-  calc();
-})();
-</script>
-```
+### Weitere Artifact-Muster (kompakt):
 
-#### Typ 4: Quiz/Lernmodus (für Wissenstests)
-```html
-<meta charset="utf-8">
-<style>
-  .quiz-option { padding: 0.75rem 1rem; border: 2px solid var(--border); border-radius: var(--radius-sm); cursor: pointer; transition: all 0.2s; margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.75rem; }
-  .quiz-option:hover { border-color: var(--primary); background: rgba(99,102,241,0.04); }
-  .quiz-option.correct { border-color: var(--success); background: rgba(16,185,129,0.08); }
-  .quiz-option.wrong { border-color: var(--danger); background: rgba(239,68,68,0.06); opacity: 0.7; }
-  .quiz-option .marker { width: 24px; height: 24px; border-radius: 50%; border: 2px solid var(--border-strong); display: flex; align-items: center; justify-content: center; font-size: 0.75rem; flex-shrink: 0; }
-  .quiz-option.correct .marker { background: var(--success); border-color: var(--success); color: #fff; }
-  .quiz-option.wrong .marker { background: var(--danger); border-color: var(--danger); color: #fff; }
-  .quiz-q { font-weight: 600; font-size: 1.05rem; margin-bottom: 1rem; }
-  .quiz-score { display: none; }
-  .quiz-score.visible { display: block; }
-</style>
-<div class="p-4">
-  <h2 class="animate-in mb-1">🧠 Wissens-Quiz</h2>
-  <p class="text-sm text-muted mb-4 animate-in">Teste dein Wissen — klicke auf die richtige Antwort</p>
-  <div id="q1" class="card mb-4 animate-in animate-in-1" data-correct="b">
-    <div class="quiz-q">1. Was ist der wichtigste Faktor beim ersten Kundenkontakt?</div>
-    <div class="quiz-option" data-val="a"><span class="marker">A</span>Sofort das Produkt pitchen</div>
-    <div class="quiz-option" data-val="b"><span class="marker">B</span>Aktiv zuhören und Bedürfnisse verstehen</div>
-    <div class="quiz-option" data-val="c"><span class="marker">C</span>Den niedrigsten Preis anbieten</div>
-  </div>
-  <div id="quiz-result" class="quiz-score card-gradient p-4 text-center animate-scale">
-    <div class="text-3xl font-bold mb-2" id="final-score"></div>
-    <div style="opacity:0.8">Richtige Antworten</div>
-  </div>
-</div>
-<script>
-(function(){
-  let answered=0; const total=document.querySelectorAll('[data-correct]').length; let correct=0;
-  document.querySelectorAll('.quiz-option').forEach(opt=>{
-    opt.addEventListener('click',function(){
-      const q=this.closest('[data-correct]'); if(q.classList.contains('answered'))return;
-      q.classList.add('answered'); answered++;
-      const isCorrect=this.dataset.val===q.dataset.correct;
-      if(isCorrect){correct++;this.classList.add('correct');this.querySelector('.marker').textContent='✓';}
-      else{this.classList.add('wrong');this.querySelector('.marker').textContent='✗';q.querySelector('[data-val="'+q.dataset.correct+'"]').classList.add('correct');q.querySelector('[data-val="'+q.dataset.correct+'"] .marker').textContent='✓';}
-      if(answered===total){const r=document.getElementById('quiz-result');r.classList.add('visible');document.getElementById('final-score').textContent=correct+'/'+total;}
-    });
-  });
-})();
-</script>
-```
+**Rechner:** Inputs (number) → Live-Ergebnis. Nutze `.card-glass` für Eingabe-Panel, `.card-gradient` oder `.result-card` (eigenes CSS: gradient bg, weiß, zentriert) für Hauptergebnis. JS: `querySelectorAll('input').forEach(i=>i.addEventListener('input',calc))`.
 
-### JavaScript State-Pattern (für alle interaktiven Artifacts):
+**Quiz:** `.quiz-option` Divs mit `data-val`, Container mit `data-correct="b"`. Klick → `.correct`/`.wrong` setzen, Marker ✓/✗. Am Ende Score anzeigen. JS: `addEventListener('click',...)`, `closest('[data-correct]')`.
+
+**Dashboard:** Score-Ring + KPI-Grid + Bar-Chart + Tabelle. Alles mit `.animate-in` staffeln.
+
+### JS State-Pattern (für ALLE interaktiven Artifacts):
 ```javascript
-// Grundmuster für interaktive Artifacts — IMMER so aufbauen:
-const state = { /* alle veränderlichen Werte */ };
-function update() {
-  // DOM basierend auf state aktualisieren
-  // Elemente ein-/ausblenden, Werte berechnen, Styles ändern
-}
-document.querySelectorAll('[data-action]').forEach(el => {
-  el.addEventListener('click', e => { /* state ändern */ update(); });
-});
-document.querySelectorAll('input').forEach(el => {
-  el.addEventListener('input', e => { /* state ändern */ update(); });
-});
-update(); // Initial-Render
+const state={/* Werte */}; function update(){/* DOM aus state rendern */}
+document.querySelectorAll('input').forEach(i=>i.addEventListener('input',e=>{state[e.target.dataset.key]=+e.target.value;update()}));
+document.querySelectorAll('[data-action]').forEach(el=>el.addEventListener('click',e=>{/* state ändern */update()}));
+update();
 ```
 
-### Wichtige Regeln:
-- Hintergrund ist TRANSPARENT — fügt sich nahtlos in den Chat ein
-- Dark-Mode wird automatisch via CSS Custom Properties unterstützt
-- CRM-Links: `<a href="/crm/contacts/{id}" target="_top">`
-- Branding-Farben werden automatisch injiziert (kein manuelles Setzen nötig)
-- Schreibe EIGENES `<style>` und `<script>` für kreative, einzigartige Layouts
-- Kopiere NICHT einfach die Beispiele — adaptiere das Konzept kreativ zum jeweiligen Thema
-- JEDES Artifact soll visuell einzigartig sein und zum Thema passen
-
-### ✨ Animationen — IMMER verwenden:
-- Nutze `.animate-in` mit `.animate-in-1` bis `.animate-in-7` für gestaffelte Einblend-Effekte
-- Bars wachsen automatisch, Progress-Bars füllen sich, Score-Rings pulsen
-- Nutze `.animate-slide-up` für größere Abschnitte, `.animate-scale` für Icons
-- JEDES Artifact muss beim Laden elegant animiert erscheinen
-
-### 🎨 Farben & Branding:
-- Branding-Farben (`--primary`, `--secondary`, `--accent`) werden automatisch injiziert
-- Nutze `.text-accent`, `.badge-accent`, `.bar.accent`, `.highlight` für Akzente
-- Mische Primary- und Accent-Farben für visuell reichhaltige Ergebnisse
-- Nutze `.text-gradient` für hervorgehobenen Text
+### Regeln:
+- Hintergrund TRANSPARENT, Dark-Mode automatisch, CRM-Links: `<a href="/crm/contacts/{id}" target="_top">`
+- Branding (`--primary`,`--secondary`,`--accent`) wird automatisch injiziert
+- Schreibe EIGENES `<style>` und `<script>` — Kreativität > Template-Konformität
+- JEDES Artifact einzigartig gestalten, Beispiele NICHT kopieren sondern adaptieren
+- `.animate-in` mit `.animate-in-1` bis `-7` auf JEDEM Element — elegante Einblend-Animationen
+- `.text-gradient`, `.text-accent`, `.highlight` für visuell reichhaltige Ergebnisse
 """
 
 
