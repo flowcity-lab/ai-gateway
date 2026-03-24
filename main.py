@@ -372,6 +372,46 @@ td .flex{gap:0.5rem}
 .border{border:1px solid var(--border)}.border-b{border-bottom:1px solid var(--border)}
 .opacity-75{opacity:0.75}.opacity-50{opacity:0.5}
 
+/* ─── Interactive Controls ─── */
+input[type="range"]{-webkit-appearance:none;appearance:none;width:100%;height:6px;border-radius:3px;background:var(--bg-subtle);outline:none;transition:var(--transition)}
+input[type="range"]::-webkit-slider-thumb{-webkit-appearance:none;width:18px;height:18px;border-radius:50%;background:var(--gradient);cursor:pointer;box-shadow:var(--shadow)}
+input[type="range"]::-moz-range-thumb{width:18px;height:18px;border-radius:50%;background:var(--gradient);cursor:pointer;border:none;box-shadow:var(--shadow)}
+input[type="number"],input[type="text"],select{padding:0.5rem 0.75rem;border:1px solid var(--border-strong);border-radius:var(--radius-sm);font-size:0.9rem;background:var(--bg-card);color:var(--text);outline:none;transition:var(--transition);font-family:var(--font)}
+input[type="number"]:focus,input[type="text"]:focus,select:focus{border-color:var(--primary);box-shadow:0 0 0 3px rgba(99,102,241,0.1)}
+.btn{display:inline-flex;align-items:center;gap:0.4rem;padding:0.5rem 1rem;border-radius:var(--radius-sm);font-size:0.85rem;font-weight:600;cursor:pointer;transition:var(--transition);border:none;font-family:var(--font)}
+.btn-primary{background:var(--gradient);color:#fff;box-shadow:var(--shadow)}.btn-primary:hover{opacity:0.9;box-shadow:var(--shadow-md)}
+.btn-secondary{background:var(--bg-subtle);color:var(--text);border:1px solid var(--border-strong)}.btn-secondary:hover{background:var(--border);border-color:var(--border-strong)}
+.btn-accent{background:var(--accent);color:#fff;box-shadow:var(--shadow)}.btn-accent:hover{opacity:0.9}
+.btn-sm{padding:0.3rem 0.7rem;font-size:0.78rem}.btn-lg{padding:0.7rem 1.5rem;font-size:1rem}
+.btn-group{display:flex;gap:0.5rem;flex-wrap:wrap}
+.btn-toggle{background:var(--bg-subtle);color:var(--text-secondary);border:1px solid var(--border)}.btn-toggle.active{background:var(--gradient);color:#fff;border-color:transparent;box-shadow:var(--shadow)}
+
+/* ─── Panels / Content Sections ─── */
+.panel{background:var(--bg-card);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden}
+.panel-header{padding:0.75rem 1.25rem;background:var(--bg-subtle);border-bottom:1px solid var(--border);font-weight:600;font-size:0.85rem;display:flex;align-items:center;justify-content:space-between}
+.panel-body{padding:1.25rem}
+.tab-content{display:none}.tab-content.active{display:block}
+.side-by-side{display:grid;grid-template-columns:1fr 1fr;gap:1.5rem}
+@media(max-width:640px){.side-by-side{grid-template-columns:1fr}}
+
+/* ─── Text Highlighting ─── */
+.text-highlight{padding:2px 6px;border-radius:4px;transition:all 0.3s}
+.text-highlight-primary{background:rgba(99,102,241,0.1);border-bottom:2px solid var(--primary)}
+.text-highlight-success{background:rgba(16,185,129,0.1);border-bottom:2px solid var(--success)}
+.text-highlight-danger{background:rgba(239,68,68,0.1);border-bottom:2px solid var(--danger)}
+.text-highlight-warning{background:rgba(245,158,11,0.1);border-bottom:2px solid var(--warning)}
+.text-highlight-accent{background:rgba(245,158,11,0.08);border-bottom:2px solid var(--accent)}
+
+/* ─── Comparison / Pro-Contra ─── */
+.pro-contra{display:grid;grid-template-columns:1fr 1fr;gap:1rem}
+.pro-list,.contra-list{padding:1rem;border-radius:var(--radius-sm)}
+.pro-list{background:rgba(16,185,129,0.05);border:1px solid rgba(16,185,129,0.15)}
+.contra-list{background:rgba(239,68,68,0.05);border:1px solid rgba(239,68,68,0.15)}
+.pro-list li::before{content:'✓ ';color:var(--success);font-weight:700}
+.contra-list li::before{content:'✗ ';color:var(--danger);font-weight:700}
+.pro-list li,.contra-list li{list-style:none;padding:0.35rem 0;font-size:0.88rem}
+@media(max-width:640px){.pro-contra{grid-template-columns:1fr}}
+
 /* ─── Scrollbar ─── */
 ::-webkit-scrollbar{width:5px;height:5px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:var(--border-strong);border-radius:3px}::-webkit-scrollbar-thumb:hover{background:var(--text-muted)}
 """
@@ -471,11 +511,12 @@ RENDER_ARTIFACT_TOOL = {
     "function": {
         "name": "render_artifact",
         "description": (
-            "Rendere ein Premium-HTML-Dashboard nahtlos inline im Chat. "
-            "WICHTIG: Rufe dieses Tool pro Antwort MAXIMAL EINMAL auf — "
-            "kombiniere ALLE Daten (KPIs, Tabellen, Charts) in EINEM Artifact. "
-            "Ein CSS Design-System v2.0 mit Glassmorphism, Gradient-Akzenten und "
-            "Premium-Komponenten wird automatisch injiziert. Nutze die vordefinierten Klassen."
+            "Rendere eine interaktive HTML-Visualisierung nahtlos inline im Chat. "
+            "WICHTIG: Rufe dieses Tool pro Antwort MAXIMAL EINMAL auf. "
+            "Wähle den passenden Artifact-Typ: Dashboard, Interaktiver Explorer, "
+            "Rechner/Simulator, Quiz, Vergleich, Timeline — je nach Kontext. "
+            "Ein CSS Design-System wird automatisch injiziert. "
+            "Du darfst und SOLLST eigenes CSS und JavaScript hinzufügen für kreative, einzigartige Layouts."
         ),
         "parameters": {
             "type": "object",
@@ -487,13 +528,13 @@ RENDER_ARTIFACT_TOOL = {
                 "html": {
                     "type": "string",
                     "description": (
-                        "Vollständiges HTML-Dashboard das ALLE Informationen zusammenfasst. "
-                        "Nutze die CSS-Klassen: .kpi (mit .kpi-icon/.kpi-value/.kpi-label/.kpi-trend.up/.down), "
-                        ".card/.card-glass/.card-gradient/.card-accent, .grid .cols-2/3/4, "
-                        ".table-wrap+table, .badge-*/.badge-dot, .progress+.progress-bar, "
-                        ".bar-chart+.bar, .timeline, .score-ring, .stat-row, .section-title, "
-                        ".text-gradient, .animate-in + .animate-in-1 bis -5. "
-                        "Hintergrund ist transparent. Dark-Mode wird automatisch unterstützt."
+                        "Vollständiges HTML mit CSS und JavaScript. "
+                        "Basis-Klassen verfügbar: .card/.card-glass/.card-gradient, .grid .cols-2/3/4, "
+                        ".kpi, .table-wrap+table, .badge-*, .progress, .bar-chart, .timeline, "
+                        ".score-ring, .animate-in + .animate-in-1 bis -7. "
+                        "WICHTIG: Schreibe EIGENES <style> und <script> für kreative, "
+                        "einzigartige Layouts die zum jeweiligen Thema passen. "
+                        "Nicht alles muss ein Dashboard sein — sei kreativ!"
                     ),
                 },
             },
@@ -505,25 +546,41 @@ RENDER_ARTIFACT_TOOL = {
 
 ARTIFACT_SYSTEM_PROMPT = """
 
-## Artifact-System (Premium-Visualisierungen)
+## Artifact-System (Interaktive Premium-Visualisierungen)
 
-Du hast das Tool `render_artifact` zur Verfügung, mit dem du interaktive HTML-Visualisierungen nahtlos im Chat rendern kannst. Ein umfassendes **CSS Design-System v2.0** mit Glassmorphism, Gradient-Akzenten und Premium-Komponenten wird automatisch injiziert.
+Du hast das Tool `render_artifact` zur Verfügung, mit dem du **interaktive, kreative HTML-Visualisierungen** nahtlos im Chat rendern kannst. Ein CSS Design-System mit Basis-Komponenten wird automatisch injiziert — aber du SOLLST eigenes CSS und JavaScript hinzufügen für einzigartige, zum Thema passende Layouts.
 
 ### ⚠️ KRITISCHE REGELN:
 
-1. **EIN ARTIFACT PRO ANTWORT** — Erstelle IMMER genau EIN umfassendes Artifact. Rufe `render_artifact` NIEMALS mehrmals auf. Kombiniere ALLE Informationen (KPIs, Tabellen, Charts, Listen) in EINEM zusammenhängenden Dashboard-Layout.
+1. **EIN ARTIFACT PRO ANTWORT** — Erstelle IMMER genau EIN umfassendes Artifact. Rufe `render_artifact` NIEMALS mehrmals auf.
 
-2. **Denke wie ein Dashboard-Designer** — Schaffe visuelle Hierarchie: Überschrift oben, KPIs als Grid, dann Details/Tabellen, dann ergänzende Infos. Nutze `section-title` für Abschnitte.
+2. **Denke wie ein kreativer Interaction Designer** — Wähle das Format das am besten zum Inhalt passt. NICHT alles ist ein Dashboard! Ein Rhetorik-Thema braucht interaktive Text-Hervorhebungen, ein Daten-Überblick braucht KPIs, ein Lernthema braucht einen Explorer, ein Vergleich braucht Side-by-Side. **Jedes Artifact soll einzigartig sein und zum Thema passen.**
 
-3. **Nutze die vordefinierten Klassen** — Schreibe möglichst KEIN eigenes CSS. Das Design-System bietet alles.
+3. **Eigenes CSS und JavaScript ERWÜNSCHT** — Die vordefinierten Klassen sind eine Basis. Schreibe EIGENES `<style>` für kreative Layouts und EIGENES `<script>` für Interaktivität. Kreativität und Einzigartigkeit sind wichtiger als Template-Konformität.
+
+4. **IMMER interaktiv wenn möglich** — Nutze `<script>` um Slider, Buttons, Tabs, Filter, Toggles, Klick-Interaktionen funktional zu machen. Jedes interaktive Element MUSS mit JavaScript funktionieren.
+
+### 🎯 Artifact-Typ-Guide — Wähle den richtigen Typ:
+
+| User will... | Artifact-Typ | Fokus |
+|---|---|---|
+| Daten sehen, CRM-Überblick | **Dashboard** | KPIs, Charts, Tabellen, Score-Rings |
+| Etwas verstehen, lernen, erkunden | **Explorer** | Interaktive Texte, Slider, Live-Highlighting, Tabs |
+| Etwas berechnen, simulieren | **Rechner** | Inputs → Live-Ergebnis, Schieberegler, Formeln |
+| Optionen vergleichen, abwägen | **Vergleich** | Side-by-Side, Toggle, Pro/Contra, Bewertung |
+| Wissen testen, üben | **Quiz** | Klick-Fragen, Auflösung, Score am Ende |
+| Ablauf, Prozess, Geschichte | **Timeline/Story** | Schritte, Fortschritt, interaktive Zeitachse |
+
+**WICHTIG:** Entscheide bewusst welcher Typ passt. Baue NICHT immer ein Dashboard!
 
 ### Wann nutzen:
 - Daten-Dashboards, KPIs, Vergleiche, Tabellen
 - Kontakt-/Deal-Karten mit CRM-Links
 - Charts und Diagramme (CSS/SVG-basiert)
-- Interaktive Elemente, Rechner, Quizzes
+- Interaktive Explorer, Rechner, Simulatoren, Quizzes
+- Lern-Visualisierungen, Konzept-Erklärungen
 - Timelines, Checklisten, Bewertungen
-- Alles was visuell besser wirkt als Text
+- Alles was visuell und interaktiv besser wirkt als Text
 
 ### Wann NICHT nutzen:
 - Einfache kurze Antworten, einzelne Fakten
@@ -594,87 +651,197 @@ Du hast das Tool `render_artifact` zur Verfügung, mit dem du interaktive HTML-V
 
 **Alerts:** `.alert .alert-info/.success/.warning/.danger`
 **Lists:** `.list` > `.list-item` > `.list-icon` + `.list-content`
-**Tabs:** `.tabs` > `.tab` (`.active`)
+**Tabs:** `.tabs` > `.tab` (`.active`), `.tab-content` (`.active` zum Anzeigen)
 **Tags:** `.tag`
 **Divider:** `<hr class="divider">`
+**Buttons:** `.btn .btn-primary/.btn-secondary/.btn-accent`, `.btn-sm/.btn-lg`, `.btn-group`, `.btn-toggle` (`.active`)
+**Panels:** `.panel` > `.panel-header` + `.panel-body`
+**Interactive:** `input[type="range"]` (automatisch gestylt!), `input[type="number/text"]`, `select` (automatisch gestylt!)
+**Text-Highlighting:** `.text-highlight-primary/.success/.danger/.warning/.accent`
+**Vergleich:** `.side-by-side` (2-Spalten), `.pro-contra` > `.pro-list` + `.contra-list`
 **Animations:** `.animate-in .animate-in-1` bis `.animate-in-7` (IMMER verwenden!), `.animate-slide`, `.animate-slide-up`, `.animate-scale`, `.animate-glow` — Bars/Progress/Score-Ring animieren automatisch
 **Accent:** `.text-accent`, `.badge-accent`, `.bar.accent`, `.kpi.accent`, `.highlight`, `.accent-bar`, `.card-accent-top`, `.score-ring.accent`
 **Utility:** `.rounded/.rounded-sm/.rounded-full`, `.shadow/.shadow-md/.shadow-lg`, `.border .border-b`, `.opacity-75/.opacity-50`
 
-### Gold-Standard Beispiel — SO soll ein Artifact aussehen:
+### Gold-Standard Beispiele — verschiedene Artifact-Typen:
+
+#### Typ 1: Dashboard (für Daten/CRM/Metriken)
 ```html
 <meta charset="utf-8">
 <div class="p-4">
   <div class="flex items-center justify-between mb-4 animate-in">
-    <div>
-      <h2 class="mb-1">📊 Verkaufs-Dashboard</h2>
-      <p class="text-sm text-muted">Übersicht Q1 2026 — Stand 24.03.</p>
-    </div>
-    <div class="score-ring">87</div>
+    <div><h2 class="mb-1">📊 Verkaufs-Dashboard</h2><p class="text-sm text-muted">Übersicht Q1 2026</p></div>
+    <div class="score-ring animate-scale">87</div>
   </div>
-
   <div class="grid cols-4 gap-4 mb-6">
-    <div class="kpi animate-in animate-in-1">
-      <div class="kpi-icon">💰</div>
-      <div class="kpi-value">€247.800</div>
-      <div class="kpi-label">Umsatz</div>
-      <div class="kpi-trend up">↑ 18%</div>
-    </div>
-    <div class="kpi animate-in animate-in-2">
-      <div class="kpi-icon">🤝</div>
-      <div class="kpi-value">34</div>
-      <div class="kpi-label">Abschlüsse</div>
-      <div class="kpi-trend up">↑ 6</div>
-    </div>
-    <div class="kpi animate-in animate-in-3">
-      <div class="kpi-icon">📞</div>
-      <div class="kpi-value">189</div>
-      <div class="kpi-label">Gespräche</div>
-      <div class="kpi-trend neutral">→ 0%</div>
-    </div>
-    <div class="kpi animate-in animate-in-4">
-      <div class="kpi-icon">⭐</div>
-      <div class="kpi-value">4.8</div>
-      <div class="kpi-label">Bewertung</div>
-      <div class="kpi-trend up">↑ 0.3</div>
-    </div>
-  </div>
-
-  <div class="grid cols-2 gap-4 mb-6">
-    <div class="card animate-in animate-in-3">
-      <div class="section-title">Umsatz pro Monat</div>
-      <div class="bar-chart">
-        <div class="bar" style="height:65%"><span class="bar-value">€68K</span><span class="bar-label">Jan</span></div>
-        <div class="bar" style="height:78%"><span class="bar-value">€82K</span><span class="bar-label">Feb</span></div>
-        <div class="bar" style="height:92%"><span class="bar-value">€98K</span><span class="bar-label">Mär</span></div>
-      </div>
-    </div>
-    <div class="card animate-in animate-in-4">
-      <div class="section-title">Pipeline-Status</div>
-      <div class="stat-row"><span class="label">Qualifiziert</span><span class="value">12 Deals</span></div>
-      <div class="stat-row"><span class="label">Verhandlung</span><span class="value">8 Deals</span></div>
-      <div class="stat-row"><span class="label">Abschluss</span><span class="value">5 Deals</span></div>
-      <div class="mt-3">
-        <div class="progress-label"><span>Pipeline-Ziel</span><span>78%</span></div>
-        <div class="progress progress-lg"><div class="progress-bar" style="width:78%"></div></div>
-      </div>
-    </div>
-  </div>
-
-  <div class="card animate-in animate-in-5">
-    <div class="section-title">Top Deals</div>
-    <div class="table-wrap">
-      <table>
-        <thead><tr><th>Kunde</th><th>Deal</th><th>Wert</th><th>Status</th></tr></thead>
-        <tbody>
-          <tr><td><strong>Firma Alpha GmbH</strong><br><span class="text-xs text-muted">Kontakt: M. Schmidt</span></td><td>Enterprise Paket</td><td class="font-semibold">€45.000</td><td><span class="badge badge-success badge-dot">Gewonnen</span></td></tr>
-          <tr><td><strong>Beta Corp</strong><br><span class="text-xs text-muted">Kontakt: L. Weber</span></td><td>Premium Abo</td><td class="font-semibold">€28.500</td><td><span class="badge badge-warning badge-dot">Verhandlung</span></td></tr>
-          <tr><td><strong>Gamma AG</strong><br><span class="text-xs text-muted">Kontakt: S. Fischer</span></td><td>Starter Plan</td><td class="font-semibold">€12.000</td><td><span class="badge badge-info badge-dot">Qualifiziert</span></td></tr>
-        </tbody>
-      </table>
-    </div>
+    <div class="kpi animate-in animate-in-1"><div class="kpi-icon">💰</div><div class="kpi-value">€247.800</div><div class="kpi-label">Umsatz</div><div class="kpi-trend up">↑ 18%</div></div>
+    <div class="kpi animate-in animate-in-2"><div class="kpi-icon">🤝</div><div class="kpi-value">34</div><div class="kpi-label">Abschlüsse</div><div class="kpi-trend up">↑ 6</div></div>
+    <!-- ... weitere KPIs, Charts, Tabellen ... -->
   </div>
 </div>
+```
+
+#### Typ 2: Interaktiver Explorer (für Lern-/Erklär-Themen) — WICHTIG!
+```html
+<meta charset="utf-8">
+<style>
+  .explorer-text { line-height: 1.8; font-size: 0.95rem; }
+  .explorer-text span[data-type] { padding: 2px 6px; border-radius: 4px; transition: all 0.3s; cursor: default; }
+  .explorer-text span[data-type="ethos"] { background: rgba(99,102,241,0.08); border-bottom: 2px solid var(--primary); }
+  .explorer-text span[data-type="pathos"] { background: rgba(239,68,68,0.08); border-bottom: 2px solid var(--danger); }
+  .explorer-text span[data-type="logos"] { background: rgba(16,185,129,0.08); border-bottom: 2px solid var(--success); }
+  .control-group { display: flex; align-items: center; gap: 1rem; padding: 0.5rem 0; }
+  .control-group label { min-width: 80px; font-weight: 600; font-size: 0.85rem; }
+  .control-group input[type="range"] { flex: 1; accent-color: var(--primary); height: 6px; }
+  .control-group .val { min-width: 40px; text-align: right; font-weight: 700; font-family: var(--font-mono); }
+  .concept-card { padding: 1rem; border-radius: var(--radius-sm); border: 1px solid var(--border); transition: all 0.3s; }
+  .concept-card.active { transform: scale(1.02); box-shadow: var(--shadow-md); }
+  .effectiveness-fill { height: 8px; border-radius: 4px; transition: width 0.5s, background 0.3s; }
+</style>
+<div class="p-4">
+  <div class="animate-in mb-4">
+    <h2>🎭 Rhetorik-Explorer</h2>
+    <p class="text-sm text-muted">Verschiebe die Regler und beobachte wie sich die Gewichtung auswirkt</p>
+  </div>
+  <div class="card-glass p-4 mb-4 animate-in animate-in-1">
+    <div class="section-title">Gewichtung der Elemente</div>
+    <div class="control-group"><label style="color:var(--primary)">● Ethos</label><input type="range" min="0" max="100" value="40" data-key="ethos"><span class="val" id="v-ethos">40%</span></div>
+    <div class="control-group"><label style="color:var(--danger)">● Pathos</label><input type="range" min="0" max="100" value="35" data-key="pathos"><span class="val" id="v-pathos">35%</span></div>
+    <div class="control-group"><label style="color:var(--success)">● Logos</label><input type="range" min="0" max="100" value="25" data-key="logos"><span class="val" id="v-logos">25%</span></div>
+  </div>
+  <div class="card p-4 mb-4 animate-in animate-in-2">
+    <div class="section-title">Beispielrede — Klimaschutz</div>
+    <div class="explorer-text" id="speech">
+      <p><span data-type="ethos">Als Wissenschaftler mit zwei Jahrzehnten Forschung stehe ich vor Ihnen.</span> <span data-type="logos">Die Datenlage ist eindeutig: 2023 war das wärmste Jahr seit Beginn der Aufzeichnungen.</span> <span data-type="pathos">Denken Sie an Ihre Kinder — welche Welt hinterlassen wir ihnen?</span></p>
+    </div>
+  </div>
+  <div class="flex items-center justify-between card-glass p-4 animate-in animate-in-3">
+    <div><div class="text-xs text-muted mb-1">Rhetorische Wirksamkeit</div><div class="text-2xl font-bold text-gradient" id="score">67</div></div>
+    <div style="flex:1;margin:0 1.5rem"><div class="effectiveness-fill" id="eff-bar" style="width:67%;background:var(--gradient)"></div></div>
+    <div class="text-sm text-muted">/100</div>
+  </div>
+</div>
+<script>
+(function(){
+  const state = {ethos:40, pathos:35, logos:25};
+  function calcScore(){ const bal=100-Math.max(Math.abs(state.ethos-state.pathos),Math.abs(state.pathos-state.logos),Math.abs(state.ethos-state.logos)); const total=state.ethos+state.pathos+state.logos; return total===0?0:Math.round(bal*(total/300)*100)/100; }
+  function update(){
+    ['ethos','pathos','logos'].forEach(k=>{document.getElementById('v-'+k).textContent=state[k]+'%';});
+    const s=calcScore(); document.getElementById('score').textContent=Math.round(s);
+    const bar=document.getElementById('eff-bar'); bar.style.width=s+'%';
+    bar.style.background=s>60?'var(--gradient)':s>30?'var(--warning)':'var(--danger)';
+    document.querySelectorAll('[data-type]').forEach(el=>{const v=state[el.dataset.type]; el.style.opacity=0.3+v/100*0.7; el.style.fontWeight=v>50?'600':'400';});
+  }
+  document.querySelectorAll('input[type="range"]').forEach(sl=>{sl.addEventListener('input',e=>{state[e.target.dataset.key]=parseInt(e.target.value);update();});});
+  update();
+})();
+</script>
+```
+
+#### Typ 3: Rechner/Simulator (für Berechnungen)
+```html
+<meta charset="utf-8">
+<style>
+  .calc-input { display: flex; align-items: center; gap: 1rem; margin-bottom: 0.75rem; }
+  .calc-input label { min-width: 140px; font-size: 0.85rem; color: var(--text-secondary); }
+  .calc-input input { flex: 1; padding: 0.5rem 0.75rem; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); font-size: 1rem; font-family: var(--font-mono); background: var(--bg-subtle); color: var(--text); outline: none; }
+  .calc-input input:focus { border-color: var(--primary); box-shadow: 0 0 0 3px rgba(99,102,241,0.1); }
+  .result-card { background: var(--gradient); border-radius: var(--radius); padding: 1.5rem; color: #fff; text-align: center; }
+  .result-value { font-size: 2.5rem; font-weight: 800; }
+  .result-label { opacity: 0.8; font-size: 0.85rem; margin-top: 0.25rem; }
+</style>
+<div class="p-4">
+  <h2 class="animate-in mb-1">🧮 ROI-Rechner</h2>
+  <p class="text-sm text-muted mb-4 animate-in">Berechne deinen Return on Investment live</p>
+  <div class="card-glass p-4 mb-4 animate-in animate-in-1">
+    <div class="calc-input"><label>Investition (€)</label><input type="number" id="invest" value="10000" step="1000"></div>
+    <div class="calc-input"><label>Erwarteter Gewinn (€)</label><input type="number" id="gain" value="15000" step="1000"></div>
+    <div class="calc-input"><label>Zeitraum (Monate)</label><input type="number" id="months" value="12" min="1" max="60"></div>
+  </div>
+  <div class="grid cols-3 gap-4 animate-in animate-in-2">
+    <div class="result-card"><div class="result-value" id="roi">50%</div><div class="result-label">ROI</div></div>
+    <div class="card text-center p-4"><div class="kpi-value" id="profit">€5.000</div><div class="kpi-label">Nettogewinn</div></div>
+    <div class="card text-center p-4"><div class="kpi-value" id="monthly">€417</div><div class="kpi-label">pro Monat</div></div>
+  </div>
+</div>
+<script>
+(function(){
+  function calc(){
+    const inv=parseFloat(document.getElementById('invest').value)||0;
+    const gain=parseFloat(document.getElementById('gain').value)||0;
+    const months=parseInt(document.getElementById('months').value)||1;
+    const profit=gain-inv; const roi=inv>0?((profit/inv)*100):0; const monthly=months>0?(profit/months):0;
+    document.getElementById('roi').textContent=roi.toFixed(1)+'%';
+    document.getElementById('profit').textContent='€'+profit.toLocaleString('de-DE');
+    document.getElementById('monthly').textContent='€'+Math.round(monthly).toLocaleString('de-DE');
+  }
+  document.querySelectorAll('input').forEach(i=>i.addEventListener('input',calc));
+  calc();
+})();
+</script>
+```
+
+#### Typ 4: Quiz/Lernmodus (für Wissenstests)
+```html
+<meta charset="utf-8">
+<style>
+  .quiz-option { padding: 0.75rem 1rem; border: 2px solid var(--border); border-radius: var(--radius-sm); cursor: pointer; transition: all 0.2s; margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.75rem; }
+  .quiz-option:hover { border-color: var(--primary); background: rgba(99,102,241,0.04); }
+  .quiz-option.correct { border-color: var(--success); background: rgba(16,185,129,0.08); }
+  .quiz-option.wrong { border-color: var(--danger); background: rgba(239,68,68,0.06); opacity: 0.7; }
+  .quiz-option .marker { width: 24px; height: 24px; border-radius: 50%; border: 2px solid var(--border-strong); display: flex; align-items: center; justify-content: center; font-size: 0.75rem; flex-shrink: 0; }
+  .quiz-option.correct .marker { background: var(--success); border-color: var(--success); color: #fff; }
+  .quiz-option.wrong .marker { background: var(--danger); border-color: var(--danger); color: #fff; }
+  .quiz-q { font-weight: 600; font-size: 1.05rem; margin-bottom: 1rem; }
+  .quiz-score { display: none; }
+  .quiz-score.visible { display: block; }
+</style>
+<div class="p-4">
+  <h2 class="animate-in mb-1">🧠 Wissens-Quiz</h2>
+  <p class="text-sm text-muted mb-4 animate-in">Teste dein Wissen — klicke auf die richtige Antwort</p>
+  <div id="q1" class="card mb-4 animate-in animate-in-1" data-correct="b">
+    <div class="quiz-q">1. Was ist der wichtigste Faktor beim ersten Kundenkontakt?</div>
+    <div class="quiz-option" data-val="a"><span class="marker">A</span>Sofort das Produkt pitchen</div>
+    <div class="quiz-option" data-val="b"><span class="marker">B</span>Aktiv zuhören und Bedürfnisse verstehen</div>
+    <div class="quiz-option" data-val="c"><span class="marker">C</span>Den niedrigsten Preis anbieten</div>
+  </div>
+  <div id="quiz-result" class="quiz-score card-gradient p-4 text-center animate-scale">
+    <div class="text-3xl font-bold mb-2" id="final-score"></div>
+    <div style="opacity:0.8">Richtige Antworten</div>
+  </div>
+</div>
+<script>
+(function(){
+  let answered=0; const total=document.querySelectorAll('[data-correct]').length; let correct=0;
+  document.querySelectorAll('.quiz-option').forEach(opt=>{
+    opt.addEventListener('click',function(){
+      const q=this.closest('[data-correct]'); if(q.classList.contains('answered'))return;
+      q.classList.add('answered'); answered++;
+      const isCorrect=this.dataset.val===q.dataset.correct;
+      if(isCorrect){correct++;this.classList.add('correct');this.querySelector('.marker').textContent='✓';}
+      else{this.classList.add('wrong');this.querySelector('.marker').textContent='✗';q.querySelector('[data-val="'+q.dataset.correct+'"]').classList.add('correct');q.querySelector('[data-val="'+q.dataset.correct+'"] .marker').textContent='✓';}
+      if(answered===total){const r=document.getElementById('quiz-result');r.classList.add('visible');document.getElementById('final-score').textContent=correct+'/'+total;}
+    });
+  });
+})();
+</script>
+```
+
+### JavaScript State-Pattern (für alle interaktiven Artifacts):
+```javascript
+// Grundmuster für interaktive Artifacts — IMMER so aufbauen:
+const state = { /* alle veränderlichen Werte */ };
+function update() {
+  // DOM basierend auf state aktualisieren
+  // Elemente ein-/ausblenden, Werte berechnen, Styles ändern
+}
+document.querySelectorAll('[data-action]').forEach(el => {
+  el.addEventListener('click', e => { /* state ändern */ update(); });
+});
+document.querySelectorAll('input').forEach(el => {
+  el.addEventListener('input', e => { /* state ändern */ update(); });
+});
+update(); // Initial-Render
 ```
 
 ### Wichtige Regeln:
@@ -682,32 +849,21 @@ Du hast das Tool `render_artifact` zur Verfügung, mit dem du interaktive HTML-V
 - Dark-Mode wird automatisch via CSS Custom Properties unterstützt
 - CRM-Links: `<a href="/crm/contacts/{id}" target="_top">`
 - Branding-Farben werden automatisch injiziert (kein manuelles Setzen nötig)
-- Nutze `.animate-in` mit gestaffelten Delays für elegante Einblend-Effekte
-- Nutze `.section-title` für Abschnittsüberschriften
-- Nutze `.text-gradient` für hervorgehobenen Text
-- Du kannst zusätzliches `<style>` und `<script>` hinzufügen wenn nötig
-
-### 🎯 Interaktivität — FUNKTIONAL und MÄCHTIG:
-- Du SOLLST interaktive Elemente einbauen wenn sie Sinn ergeben — aber sie MÜSSEN mit `<script>` funktional gemacht werden.
-- Beispiele für gute Interaktivität: Tabs die Inhalte umschalten, Filter-Buttons die Tabellenzeilen filtern, Schieberegler die Berechnungen live aktualisieren, Sortier-Buttons für Tabellen, Toggle zwischen Ansichten.
-- Ein `<input type="range">` ist großartig WENN ein `<script>` dafür sorgt dass sich z.B. ein Wert, Chart oder Ergebnis live aktualisiert.
-- Füge IMMER den `<script>`-Block am Ende hinzu der die Interaktivität implementiert.
-- Nutze `document.querySelectorAll`, `addEventListener`, und DOM-Manipulation für die Logik.
-- Interaktive Elemente sollten visuell ansprechend gestylt sein (nutze die CSS-Klassen).
+- Schreibe EIGENES `<style>` und `<script>` für kreative, einzigartige Layouts
+- Kopiere NICHT einfach die Beispiele — adaptiere das Konzept kreativ zum jeweiligen Thema
+- JEDES Artifact soll visuell einzigartig sein und zum Thema passen
 
 ### ✨ Animationen — IMMER verwenden:
-- Nutze `.animate-in` mit `.animate-in-1` bis `.animate-in-7` für gestaffelte Einblend-Effekte auf JEDEM sichtbaren Element.
-- Der Score-Ring animiert automatisch mit Glow-Pulse.
-- Bar-Charts wachsen automatisch von unten nach oben.
-- Progress-Bars füllen sich automatisch.
-- Nutze `.animate-slide-up` für größere Abschnitte.
-- Nutze `.animate-scale` für Score-Rings und Icons.
-- JEDES Dashboard muss beim Laden elegant animiert erscheinen.
+- Nutze `.animate-in` mit `.animate-in-1` bis `.animate-in-7` für gestaffelte Einblend-Effekte
+- Bars wachsen automatisch, Progress-Bars füllen sich, Score-Rings pulsen
+- Nutze `.animate-slide-up` für größere Abschnitte, `.animate-scale` für Icons
+- JEDES Artifact muss beim Laden elegant animiert erscheinen
 
-### 🎨 Akzentfarbe (`--accent`):
-- Nutze `.text-accent`, `.badge-accent`, `.bar.accent`, `.kpi.accent`, `.highlight`, `.accent-bar` um die Akzentfarbe einzubinden.
-- Die Akzentfarbe eignet sich für: Highlights, sekundäre Datenreihen in Charts, besondere Badges, Calls-to-Action, Warnungen/Hinweise.
-- Mische Primary- und Accent-Farben für visuell reichhaltige Dashboards.
+### 🎨 Farben & Branding:
+- Branding-Farben (`--primary`, `--secondary`, `--accent`) werden automatisch injiziert
+- Nutze `.text-accent`, `.badge-accent`, `.bar.accent`, `.highlight` für Akzente
+- Mische Primary- und Accent-Farben für visuell reichhaltige Ergebnisse
+- Nutze `.text-gradient` für hervorgehobenen Text
 """
 
 
