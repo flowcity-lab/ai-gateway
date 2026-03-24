@@ -392,6 +392,7 @@ def chat_pipeline_sync(data: ChatRequest) -> dict:
         model = get_model_name(data.model)
         all_tool_calls = []
         all_tool_results = []
+        pending_images = []
         max_iterations = 5
 
         for iteration in range(max_iterations):
@@ -422,6 +423,18 @@ def chat_pipeline_sync(data: ChatRequest) -> dict:
                 result = execute_skill(tool_name, tool_args, data.user_id, data.chat_id)
                 all_tool_results.append({"tool_call_id": tc.id, "name": tool_name, "result": result})
 
+                # Base64-Bilddaten extrahieren und separat sammeln
+                # (wird NICHT an GPT gesendet — zu groß für den Context)
+                image_b64 = result.pop("_image_b64", None)
+                if image_b64:
+                    pending_images.append({
+                        "image_b64": image_b64,
+                        "prompt": result.get("prompt", ""),
+                        "size": result.get("size", "1024x1024"),
+                        "quality": result.get("quality", "medium"),
+                        "model": result.get("model", "gpt-image-1"),
+                    })
+
                 messages.append({
                     "role": "tool",
                     "tool_call_id": tc.id,
@@ -438,7 +451,7 @@ def chat_pipeline_sync(data: ChatRequest) -> dict:
         log.info("Chat %d [sync]: Fertig. %d input, %d output tokens, %d ms",
                  data.chat_id, usage["input_tokens"], usage["output_tokens"], duration_ms)
 
-        return {
+        resp = {
             "status": "completed",
             "chat_id": data.chat_id,
             "content": content,
@@ -448,6 +461,13 @@ def chat_pipeline_sync(data: ChatRequest) -> dict:
             "tool_calls": all_tool_calls or None,
             "tool_results": all_tool_results or None,
         }
+
+        if pending_images:
+            resp["pending_images"] = pending_images
+            log.info("Chat %d [sync]: %d Bilder in Response (pending_images)",
+                     data.chat_id, len(pending_images))
+
+        return resp
 
     except Exception as e:
         log.error("Chat %d [sync]: Fehler — %s", data.chat_id, str(e))
@@ -767,9 +787,10 @@ def execute_skill(skill_name: str, params: dict, user_id: int, chat_id: int = 0)
 
 def generate_image(params: dict, user_id: int, chat_id: int) -> dict:
     """
-    Generiert ein Bild über OpenAI gpt-image-1 und speichert es über Laravel.
-    Wird direkt im Gateway ausgeführt (nicht an Laravel Skill-Controller gesendet),
-    weil der Gateway die OpenAI API Keys hat.
+    Generiert ein Bild über OpenAI gpt-image-1.
+    Gibt die Base64-Bilddaten im Result zurück (unter '_image_b64').
+    Die sync/stream pipeline sammelt diese und gibt sie als 'pending_images'
+    in der Response an Laravel zurück, damit Laravel das Bild lokal speichert.
     """
     prompt = params.get("prompt", "")
     size = params.get("size", "1024x1024")
@@ -799,42 +820,18 @@ def generate_image(params: dict, user_id: int, chat_id: int) -> dict:
         if not image_b64:
             return {"error": "Keine Bilddaten von OpenAI erhalten"}
 
-        # Bild an Laravel senden zum Speichern
-        image_save_url = _get_image_save_url()
-        if not image_save_url:
-            return {"error": "Keine LARAVEL_CALLBACK_URL konfiguriert für Bildspeicherung"}
+        log.info("Bild generiert: %d bytes Base64-Daten", len(image_b64))
 
-        with httpx.Client(timeout=60) as client:
-            resp = client.post(
-                image_save_url,
-                json={
-                    "user_id": user_id,
-                    "chat_id": chat_id,
-                    "image_b64": image_b64,
-                    "prompt": prompt[:2000],
-                    "size": size,
-                    "quality": quality,
-                    "model": "gpt-image-1",
-                },
-                headers={"Authorization": f"Bearer {AI_GATEWAY_SECRET}"},
-            )
-
-            if resp.status_code != 200:
-                log.warning("Bild speichern fehlgeschlagen: %d — %s", resp.status_code, resp.text)
-                return {"error": f"Bild konnte nicht gespeichert werden: HTTP {resp.status_code}"}
-
-            result = resp.json()
-            image_url = result.get("url", "")
-
-        log.info("Bild generiert und gespeichert: %s", image_url)
-
+        # Base64 in _image_b64 zurückgeben (wird von der Pipeline extrahiert,
+        # NICHT an GPT gesendet — GPT bekommt nur die Metadaten)
         return {
             "status": "success",
-            "image_url": image_url,
+            "_image_b64": image_b64,
             "prompt": prompt,
             "size": size,
             "quality": quality,
-            "message": f"Bild wurde erfolgreich generiert und gespeichert.",
+            "model": "gpt-image-1",
+            "message": "Bild wurde erfolgreich generiert.",
         }
 
     except openai.BadRequestError as e:
