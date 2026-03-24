@@ -106,6 +106,10 @@ class ChatRequest(BaseModel):
     skills: list = []
     callback_url: str = ""
     mode: str = "async"  # "async" (default) oder "sync"
+    # RAG-Konfiguration
+    notebook_ids: list = []           # z.B. ["nb_1", "nb_3"]
+    doc_processor_url: str = ""       # z.B. "https://trainer-doc-processor.ai-guide.at"
+    doc_processor_secret: str = ""    # Bearer-Token für doc-processor
 
 
 # ── Health ────────────────────────────────────────────────────────────
@@ -154,7 +158,19 @@ def chat_pipeline_sync(data: ChatRequest) -> dict:
     """
     start_time = time.time()
     try:
-        messages = build_messages(data)
+        # RAG: Dokumente suchen wenn Notebooks verknüpft sind
+        rag_context = []
+        if data.notebook_ids and data.doc_processor_url:
+            log.info("Chat %d [sync]: RAG-Suche in %d Notebooks", data.chat_id, len(data.notebook_ids))
+            rag_context = search_documents(
+                query=data.message,
+                notebook_ids=data.notebook_ids,
+                doc_processor_url=data.doc_processor_url,
+                doc_processor_secret=data.doc_processor_secret,
+            )
+            log.info("Chat %d [sync]: %d RAG-Chunks gefunden", data.chat_id, len(rag_context))
+
+        messages = build_messages(data, rag_context=rag_context)
         tools = build_tools(data.skills) if data.skills else None
         model = get_model_name(data.model)
         all_tool_calls = []
@@ -241,8 +257,20 @@ def chat_pipeline(data: ChatRequest):
     """
     start_time = time.time()
     try:
-        # 1. Messages aufbauen
-        messages = build_messages(data)
+        # 0. RAG: Dokumente suchen wenn Notebooks verknüpft sind
+        rag_context = []
+        if data.notebook_ids and data.doc_processor_url:
+            log.info("Chat %d: RAG-Suche in %d Notebooks", data.chat_id, len(data.notebook_ids))
+            rag_context = search_documents(
+                query=data.message,
+                notebook_ids=data.notebook_ids,
+                doc_processor_url=data.doc_processor_url,
+                doc_processor_secret=data.doc_processor_secret,
+            )
+            log.info("Chat %d: %d RAG-Chunks gefunden", data.chat_id, len(rag_context))
+
+        # 1. Messages aufbauen (mit RAG-Kontext)
+        messages = build_messages(data, rag_context=rag_context)
 
         # 2. Tool-Definitionen (OpenAI Function Calling Format)
         tools = build_tools(data.skills) if data.skills else None
@@ -340,10 +368,49 @@ def chat_pipeline(data: ChatRequest):
             })
 
 
+# ── Helper: RAG — Dokumente suchen ───────────────────────────────────
+
+def search_documents(query: str, notebook_ids: list, doc_processor_url: str, doc_processor_secret: str, top_k: int = 5) -> list:
+    """
+    Sucht in allen verknüpften Notebooks nach relevanten Dokumenten-Chunks.
+    Gibt eine Liste von {text, filename, score} zurück.
+    """
+    if not notebook_ids or not doc_processor_url:
+        return []
+
+    all_results = []
+    try:
+        with httpx.Client(timeout=15) as client:
+            for nb_id in notebook_ids:
+                resp = client.post(
+                    f"{doc_processor_url}/search",
+                    data={
+                        "query": query,
+                        "notebook_id": nb_id,
+                        "top_k": top_k,
+                    },
+                    headers={
+                        "Authorization": f"Bearer {doc_processor_secret}",
+                        "Content-Type": "application/x-www-form-urlencoded",
+                    },
+                )
+                if resp.status_code == 200:
+                    results = resp.json().get("results", [])
+                    all_results.extend(results)
+                else:
+                    log.warning("RAG search for %s failed: %d", nb_id, resp.status_code)
+    except Exception as e:
+        log.error("RAG search error: %s", str(e))
+
+    # Nach Score sortieren und Top-K zurückgeben
+    all_results.sort(key=lambda r: r.get("score", 0), reverse=True)
+    return all_results[:top_k]
+
+
 # ── Helper: Messages bauen ───────────────────────────────────────────
 
-def build_messages(data: ChatRequest) -> list:
-    """System-Prompt mit Memories anreichern + Conversation History."""
+def build_messages(data: ChatRequest, rag_context: list = None) -> list:
+    """System-Prompt mit Memories + RAG-Kontext anreichern + Conversation History."""
     system_parts = []
 
     # System-Prompt des Assistenten
@@ -357,6 +424,22 @@ def build_messages(data: ChatRequest) -> list:
         )
         system_parts.append(
             f"\n\n## Bekannte Informationen über den Trainer:\n{memory_text}"
+        )
+
+    # RAG-Kontext injizieren
+    if rag_context:
+        context_parts = []
+        for i, chunk in enumerate(rag_context, 1):
+            source = chunk.get("filename", "Unbekannt")
+            text = chunk.get("text", "")
+            score = chunk.get("score", 0)
+            context_parts.append(f"[Quelle {i}: {source} (Relevanz: {score:.2f})]\n{text}")
+        context_block = "\n\n".join(context_parts)
+        system_parts.append(
+            f"\n\n## Relevanter Kontext aus Dokumenten:\n"
+            f"Nutze die folgenden Informationen aus den Wissensdatenbanken des Trainers, "
+            f"um die Frage zu beantworten. Verweise auf die Quellen wenn möglich.\n\n"
+            f"{context_block}"
         )
 
     messages = []
