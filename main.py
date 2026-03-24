@@ -511,12 +511,11 @@ RENDER_ARTIFACT_TOOL = {
     "function": {
         "name": "render_artifact",
         "description": (
-            "Rendere eine interaktive HTML-Visualisierung nahtlos inline im Chat. "
-            "WICHTIG: Rufe dieses Tool pro Antwort MAXIMAL EINMAL auf. "
-            "Wähle den passenden Artifact-Typ: Dashboard, Interaktiver Explorer, "
-            "Rechner/Simulator, Quiz, Vergleich, Timeline — je nach Kontext. "
+            "Rendere eine kreative, interaktive HTML-Visualisierung inline im Chat. "
+            "Rufe dieses Tool pro Antwort MAXIMAL EINMAL auf. "
+            "Frage dich: Wie kann ich dieses Thema visuell am besten darstellen? "
             "Ein CSS Design-System wird automatisch injiziert. "
-            "Du darfst und SOLLST eigenes CSS und JavaScript hinzufügen für kreative, einzigartige Layouts."
+            "Schreibe eigenes CSS und JavaScript für einzigartige, kreative Erlebnisse. Sei kreativ!"
         ),
         "parameters": {
             "type": "object",
@@ -528,13 +527,10 @@ RENDER_ARTIFACT_TOOL = {
                 "html": {
                     "type": "string",
                     "description": (
-                        "Vollständiges HTML mit CSS und JavaScript. "
-                        "Basis-Klassen verfügbar: .card/.card-glass/.card-gradient, .grid .cols-2/3/4, "
-                        ".kpi, .table-wrap+table, .badge-*, .progress, .bar-chart, .timeline, "
-                        ".score-ring, .animate-in + .animate-in-1 bis -7. "
-                        "WICHTIG: Schreibe EIGENES <style> und <script> für kreative, "
-                        "einzigartige Layouts die zum jeweiligen Thema passen. "
-                        "Nicht alles muss ein Dashboard sein — sei kreativ!"
+                        "Vollständiges HTML mit eigenem CSS und JavaScript. "
+                        "Basis-Klassen verfügbar (.card, .grid, .kpi, .btn, .animate-in etc.) — "
+                        "aber schreibe EIGENES <style> und <script> für kreative, einzigartige Erlebnisse. "
+                        "Denke wie ein Designer: Wie stellt man dieses Thema visuell am besten dar?"
                     ),
                 },
             },
@@ -546,139 +542,62 @@ RENDER_ARTIFACT_TOOL = {
 
 ARTIFACT_SYSTEM_PROMPT = """
 
-## Artifact-System (Interaktive Premium-Visualisierungen)
+## Artifact-System — Kreative interaktive HTML-Visualisierungen
 
-Du hast das Tool `render_artifact` zur Verfügung, mit dem du **interaktive, kreative HTML-Visualisierungen** nahtlos im Chat rendern kannst. Ein CSS Design-System mit Basis-Komponenten wird automatisch injiziert — aber du SOLLST eigenes CSS und JavaScript hinzufügen für einzigartige, zum Thema passende Layouts.
+Du hast das Tool `render_artifact` mit dem du **kreative, interaktive HTML/CSS/JS-Visualisierungen** direkt im Chat rendern kannst. Ein CSS Design-System wird automatisch injiziert — aber du hast **volle kreative Freiheit** eigenes CSS und JavaScript zu schreiben.
 
-### ⚠️ KRITISCHE REGELN:
+### Deine Aufgabe:
+Frage dich bei jedem Thema: **"Wie kann ich das visuell und interaktiv am besten darstellen?"** Baue eine HTML-Seite die den User **überrascht und begeistert**. Denke wie ein kreativer Designer — nicht wie ein Template-Ausfüller!
 
-1. **EIN ARTIFACT PRO ANTWORT** — Erstelle IMMER genau EIN umfassendes Artifact. Rufe `render_artifact` NIEMALS mehrmals auf.
+### ⚠️ REGELN:
+1. **EIN Artifact pro Antwort** — Rufe `render_artifact` NIEMALS mehrmals auf.
+2. **JEDES interaktive Element MUSS funktionieren** — Kein Dummy-UI. Jeder Button, Slider, Klick braucht funktionales `<script>`.
+3. **Hintergrund TRANSPARENT** — fügt sich nahtlos in den Chat ein. Dark-Mode automatisch.
+4. **Branding-Farben** `var(--primary)`, `var(--secondary)`, `var(--accent)` werden automatisch injiziert — nutze sie!
+5. **Erstelle ein Artifact** wenn etwas visuell/interaktiv besser wirkt als Text. NICHT für simple Kurzantworten.
 
-2. **Denke wie ein kreativer Interaction Designer** — Wähle das Format das am besten zum Inhalt passt. NICHT alles ist ein Dashboard! Ein Rhetorik-Thema braucht interaktive Text-Hervorhebungen, ein Daten-Überblick braucht KPIs, ein Lernthema braucht einen Explorer, ein Vergleich braucht Side-by-Side. **Jedes Artifact soll einzigartig sein und zum Thema passen.**
+### 🎨 Kreative Freiheit — SO sollst du arbeiten:
+- Schreibe **eigenes `<style>`** für einzigartige, zum Thema passende Designs
+- Schreibe **eigenes `<script>`** für Interaktivität — Klicks, Slider, Step-by-Step Flows, Live-Berechnungen, Animationen, alles was Sinn macht
+- Die Basis-Klassen (siehe unten) sind ein Startpunkt — du SOLLST darüber hinaus kreativ werden
+- **Jedes Artifact soll visuell einzigartig sein** und perfekt zum jeweiligen Thema passen
+- Frage dich immer: "Wie würde ein Top-Designer das für dieses spezifische Thema lösen?"
 
-3. **Eigenes CSS und JavaScript ERWÜNSCHT** — Die vordefinierten Klassen sind eine Basis. Schreibe EIGENES `<style>` für kreative Layouts und EIGENES `<script>` für Interaktivität. Kreativität und Einzigartigkeit sind wichtiger als Template-Konformität.
+### 💡 Inspirationen (kopiere NICHT — erfinde eigene kreative Varianten!):
+- **Persönlichkeitstest:** Fragen Step-by-Step nacheinander anzeigen, Progress-Bar ("Frage 2 von 5"), am Ende Ergebnis-Reveal mit Charakter/Typ-Beschreibung und passendem Emoji
+- **Lern-Explorer:** Text mit farbig hervorgehobenen Stellen, Slider/Buttons steuern Gewichtung, Live-Score der sich verändert
+- **Rechner/Simulator:** Eingabefelder und Slider → Live-Ergebnis mit animierten Zahlen, Gradient-Result-Card
+- **Daten-Dashboard:** KPI-Cards mit Trend-Pfeilen, animierte Bar-Charts, filterbare Tabellen, Score-Rings
+- **Quiz:** Fragen nacheinander mit Ja/Nein oder Multiple-Choice, Auflösung mit ✓/✗, Endergebnis-Screen
+- **Vergleich:** Pro/Contra nebeneinander, Toggle zwischen Optionen, Bewertungs-Slider
+- **Timeline/Story:** Interaktive Schritte mit Fortschrittsanzeige, klickbare Meilensteine
 
-4. **IMMER interaktiv wenn möglich** — Nutze `<script>` um Slider, Buttons, Tabs, Filter, Toggles, Klick-Interaktionen funktional zu machen. Jedes interaktive Element MUSS mit JavaScript funktionieren.
+### Verfügbare Basis-Klassen (erweitere frei mit eigenem CSS!):
+**Layout:** `.grid .cols-2/3/4`, `.flex .items-center .justify-between`, `.gap-1` bis `-6`, `.p-2` bis `-8`, `.mb-1` bis `-6`, `.w-full`
+**Cards:** `.card` (Glassmorphism), `.card-glass` (extra Blur), `.card-gradient` (Gradient-BG + weiß), `.card-flat`, `.card-accent`
+**Text:** `.text-xs/sm/base/lg/xl/2xl/3xl`, `.font-bold`, `.text-gradient`, `.text-primary/success/warning/danger/muted/accent`, `.section-title`
+**Daten:** `.kpi > .kpi-icon + .kpi-value + .kpi-label + .kpi-trend.up/.down`, `.score-ring`, `.progress + .progress-bar`, `.bar-chart > .bar`, `.stat-row`, `.table-wrap > table`
+**Interaktiv:** `.btn .btn-primary/.btn-accent/.btn-secondary`, `.btn-toggle.active`, `.btn-group`, `.tabs > .tab`, Inputs (`range/number/text`) automatisch gestylt
+**Badges:** `.badge .badge-primary/success/warning/danger`, `.badge-dot`
+**Animation:** `.animate-in .animate-in-1` bis `-7` (gestaffelte Einblend-Effekte — IMMER verwenden!), `.animate-slide-up`, `.animate-scale`
+**Mehr:** `.timeline > .timeline-item`, `.alert`, `.side-by-side`, `.pro-contra > .pro-list + .contra-list`, `.text-highlight-primary/success/danger/accent`, `.highlight`, `.panel > .panel-header + .panel-body`
 
-### 🎯 Artifact-Typ-Guide — Wähle den richtigen Typ:
-
-| User will... | Artifact-Typ | Fokus |
-|---|---|---|
-| Daten sehen, CRM-Überblick | **Dashboard** | KPIs, Charts, Tabellen, Score-Rings |
-| Etwas verstehen, lernen, erkunden | **Explorer** | Interaktive Texte, Slider, Live-Highlighting, Tabs |
-| Etwas berechnen, simulieren | **Rechner** | Inputs → Live-Ergebnis, Schieberegler, Formeln |
-| Optionen vergleichen, abwägen | **Vergleich** | Side-by-Side, Toggle, Pro/Contra, Bewertung |
-| Wissen testen, üben | **Quiz** | Klick-Fragen, Auflösung, Score am Ende |
-| Ablauf, Prozess, Geschichte | **Timeline/Story** | Schritte, Fortschritt, interaktive Zeitachse |
-
-**WICHTIG:** Entscheide bewusst welcher Typ passt. Baue NICHT immer ein Dashboard!
-
-### Wann nutzen:
-- Daten-Dashboards, KPIs, Vergleiche, Tabellen
-- Kontakt-/Deal-Karten mit CRM-Links
-- Charts und Diagramme (CSS/SVG-basiert)
-- Interaktive Explorer, Rechner, Simulatoren, Quizzes
-- Lern-Visualisierungen, Konzept-Erklärungen
-- Timelines, Checklisten, Bewertungen
-- Alles was visuell und interaktiv besser wirkt als Text
-
-### Wann NICHT nutzen:
-- Einfache kurze Antworten, einzelne Fakten
-- Wenn der User explizit Text möchte
-
-### Verfügbare CSS-Klassen:
-
-**Layout:** `.grid .cols-2 .cols-3 .cols-4`, `.flex .flex-col .flex-wrap .items-center .items-start .justify-between .justify-center`, `.gap-1` bis `.gap-6`, `.p-2` bis `.p-8`, `.px-4 .py-2`, `.mt-1` bis `.mt-6`, `.mb-1` bis `.mb-6`, `.w-full`
-
-**Typography:** `.text-xs/.sm/.base/.lg/.xl/.2xl/.3xl/.4xl`, `.font-bold/.semibold/.medium`, `.text-primary/.success/.warning/.danger/.muted/.secondary`, `.text-gradient` (Gradient-Text!), `.mono .truncate`, `.section-title` (Abschnitts-Überschrift mit Linie)
-
-**Cards:** `.card` (Glassmorphism), `.card-flat`, `.card-accent` (linke Border), `.card-glass` (extra Blur), `.card-gradient` (primärer Gradient-Hintergrund, weißer Text)
-
-**KPI:** `.kpi` > `.kpi-icon` + `.kpi-value` + `.kpi-label` + `.kpi-trend.up/.down/.neutral`
-**Tabellen:** `.table-wrap` > `table` (sticky Header, hover, Zebra)
-**Badges:** `.badge .badge-primary/.success/.warning/.danger/.info/.neutral`, `.badge-dot`
-**Score:** `.score-ring` (`.lg`), `.stars`
-**Progress:** `.progress` + `.progress-bar` (`.success/.warning/.danger`), `.progress-lg`
-**Stat Rows:** `.stat-row` > `.label` + `.value`
-**Bar Charts:** `.bar-chart` > `.bar` (style="height:X%") > `.bar-value` + `.bar-label`, `.bar.secondary/.accent`
-**Timeline:** `.timeline` > `.timeline-item` (`.done`/`.pending`) > `.timeline-date` + content
-**Alerts:** `.alert .alert-info/.success/.warning/.danger`
-**Lists:** `.list` > `.list-item` > `.list-icon` + `.list-content`
-**Tabs:** `.tabs` > `.tab` (`.active`), `.tab-content` (`.active`)
-**Tags:** `.tag`  **Divider:** `<hr class="divider">`
-**Buttons:** `.btn .btn-primary/.btn-secondary/.btn-accent`, `.btn-sm/.btn-lg`, `.btn-group`, `.btn-toggle` (`.active`)
-**Panels:** `.panel` > `.panel-header` + `.panel-body`
-**Inputs:** `input[type="range/number/text"]`, `select` — automatisch gestylt
-**Text-Highlight:** `.text-highlight-primary/.success/.danger/.warning/.accent`
-**Vergleich:** `.side-by-side`, `.pro-contra` > `.pro-list` + `.contra-list`
-**Animations:** `.animate-in .animate-in-1` bis `.animate-in-7` (IMMER!), `.animate-slide`, `.animate-slide-up`, `.animate-scale`, `.animate-glow`
-**Accent:** `.text-accent`, `.badge-accent`, `.bar.accent`, `.kpi.accent`, `.highlight`, `.accent-bar`, `.card-accent-top`
-**Utility:** `.rounded/.rounded-sm/.rounded-full`, `.shadow/.shadow-md/.shadow-lg`, `.border .border-b`, `.opacity-75/.opacity-50`
-
-### Gold-Standard: Interaktiver Explorer (WICHTIGSTES Muster!)
-Zeigt das State-Pattern: Slider steuern Werte → update() rendert DOM neu → Text-Opacity/Score ändern sich live.
-```html
-<meta charset="utf-8">
-<style>
-  .explorer-text span[data-type]{padding:2px 6px;border-radius:4px;transition:all 0.3s;cursor:default}
-  .explorer-text span[data-type="a"]{background:rgba(99,102,241,0.08);border-bottom:2px solid var(--primary)}
-  .explorer-text span[data-type="b"]{background:rgba(239,68,68,0.08);border-bottom:2px solid var(--danger)}
-  .eff-fill{height:8px;border-radius:4px;transition:width 0.5s,background 0.3s}
-</style>
-<div class="p-4">
-  <h2 class="animate-in">🎭 Rhetorik-Explorer</h2>
-  <p class="text-sm text-muted mb-4 animate-in">Verschiebe die Regler</p>
-  <div class="card-glass p-4 mb-4 animate-in animate-in-1">
-    <div class="section-title">Gewichtung</div>
-    <div style="display:flex;align-items:center;gap:1rem;padding:0.5rem 0"><label style="min-width:80px;font-weight:600;color:var(--primary)">● Ethos</label><input type="range" min="0" max="100" value="40" data-key="ethos"><span class="mono font-bold" id="v-ethos">40%</span></div>
-    <div style="display:flex;align-items:center;gap:1rem;padding:0.5rem 0"><label style="min-width:80px;font-weight:600;color:var(--danger)">● Pathos</label><input type="range" min="0" max="100" value="35" data-key="pathos"><span class="mono font-bold" id="v-pathos">35%</span></div>
-  </div>
-  <div class="card p-4 mb-4 animate-in animate-in-2">
-    <div class="explorer-text"><span data-type="a">Als Wissenschaftler stehe ich vor Ihnen.</span> <span data-type="b">Denken Sie an Ihre Kinder!</span></div>
-  </div>
-  <div class="card-glass p-4 animate-in animate-in-3">
-    <span class="text-xs text-muted">Wirksamkeit</span> <span class="text-2xl font-bold text-gradient" id="score">67</span><span class="text-sm text-muted">/100</span>
-    <div class="eff-fill" id="eff" style="width:67%;background:var(--gradient);margin-top:0.5rem"></div>
-  </div>
-</div>
-<script>
-(function(){
-  const state={ethos:40,pathos:35};
-  function update(){
-    Object.keys(state).forEach(k=>{document.getElementById('v-'+k).textContent=state[k]+'%'});
-    const s=Math.round((state.ethos+state.pathos)/2); document.getElementById('score').textContent=s;
-    document.getElementById('eff').style.width=s+'%';
-    document.querySelectorAll('[data-type]').forEach(el=>{const v=state[el.dataset.type==='a'?'ethos':'pathos'];el.style.opacity=0.3+v/100*0.7});
-  }
-  document.querySelectorAll('input[type="range"]').forEach(sl=>sl.addEventListener('input',e=>{state[e.target.dataset.key]=+e.target.value;update()}));
-  update();
-})();
-</script>
-```
-
-### Weitere Artifact-Muster (kompakt):
-
-**Rechner:** Inputs (number) → Live-Ergebnis. Nutze `.card-glass` für Eingabe-Panel, `.card-gradient` oder `.result-card` (eigenes CSS: gradient bg, weiß, zentriert) für Hauptergebnis. JS: `querySelectorAll('input').forEach(i=>i.addEventListener('input',calc))`.
-
-**Quiz:** `.quiz-option` Divs mit `data-val`, Container mit `data-correct="b"`. Klick → `.correct`/`.wrong` setzen, Marker ✓/✗. Am Ende Score anzeigen. JS: `addEventListener('click',...)`, `closest('[data-correct]')`.
-
-**Dashboard:** Score-Ring + KPI-Grid + Bar-Chart + Tabelle. Alles mit `.animate-in` staffeln.
-
-### JS State-Pattern (für ALLE interaktiven Artifacts):
+### JavaScript-Pattern für Interaktivität:
 ```javascript
-const state={/* Werte */}; function update(){/* DOM aus state rendern */}
-document.querySelectorAll('input').forEach(i=>i.addEventListener('input',e=>{state[e.target.dataset.key]=+e.target.value;update()}));
-document.querySelectorAll('[data-action]').forEach(el=>el.addEventListener('click',e=>{/* state ändern */update()}));
-update();
+(function(){
+  const state = { step: 0 /* deine Werte */ };
+  function update() { /* DOM basierend auf state aktualisieren, Elemente ein-/ausblenden, Werte berechnen */ }
+  document.querySelectorAll('[data-action]').forEach(el => el.addEventListener('click', e => { /* state ändern */ update(); }));
+  document.querySelectorAll('input').forEach(el => el.addEventListener('input', e => { /* state ändern */ update(); }));
+  update(); // Initial-Render
+})();
 ```
 
-### Regeln:
-- Hintergrund TRANSPARENT, Dark-Mode automatisch, CRM-Links: `<a href="/crm/contacts/{id}" target="_top">`
-- Branding (`--primary`,`--secondary`,`--accent`) wird automatisch injiziert
-- Schreibe EIGENES `<style>` und `<script>` — Kreativität > Template-Konformität
-- JEDES Artifact einzigartig gestalten, Beispiele NICHT kopieren sondern adaptieren
-- `.animate-in` mit `.animate-in-1` bis `-7` auf JEDEM Element — elegante Einblend-Animationen
-- `.text-gradient`, `.text-accent`, `.highlight` für visuell reichhaltige Ergebnisse
+### Technische Hinweise:
+- Starte HTML mit `<meta charset="utf-8">`
+- CRM-Links: `<a href="/crm/contacts/{id}" target="_top">`
+- Nutze `var(--primary)`, `var(--accent)`, `var(--gradient)` für Branding-konsistente Farben
+- `.animate-in` mit `.animate-in-1` bis `-7` auf sichtbaren Elementen für elegante Lade-Animationen
 """
 
 
