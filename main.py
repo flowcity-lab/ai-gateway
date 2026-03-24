@@ -122,7 +122,14 @@ async def health():
 @app.post("/chat")
 async def chat(request: Request, bg: BackgroundTasks):
     verify_auth(request)
-    body = await request.json()
+    try:
+        raw = await request.body()
+        text = raw.decode("utf-8")
+        body = json.loads(text)
+    except UnicodeDecodeError:
+        raise HTTPException(400, "Request body must be UTF-8 encoded")
+    except json.JSONDecodeError:
+        raise HTTPException(400, "Invalid JSON in request body")
     data = ChatRequest(**body)
 
     # Sofort 202 Accepted zurückgeben, Verarbeitung im Background
