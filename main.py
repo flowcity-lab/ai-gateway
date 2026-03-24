@@ -105,6 +105,7 @@ class ChatRequest(BaseModel):
     trainer_memories: list = []
     skills: list = []
     callback_url: str = ""
+    mode: str = "async"  # "async" (default) oder "sync"
 
 
 # ── Health ────────────────────────────────────────────────────────────
@@ -132,13 +133,103 @@ async def chat(request: Request, bg: BackgroundTasks):
         raise HTTPException(400, "Invalid JSON in request body")
     data = ChatRequest(**body)
 
-    # Sofort 202 Accepted zurückgeben, Verarbeitung im Background
+    # Sync-Modus: LLM-Call direkt ausführen und Ergebnis zurückgeben
+    if data.mode == "sync":
+        log.info("Chat %d: Sync-Modus", data.chat_id)
+        result = chat_pipeline_sync(data)
+        return result
+
+    # Async-Modus (default): Sofort 202 Accepted, Verarbeitung im Background
     bg.add_task(chat_pipeline, data)
 
     return {"status": "accepted", "chat_id": data.chat_id}
 
 
-# ── Chat Pipeline (Background) ───────────────────────────────────────
+# ── Chat Pipeline (Sync) ─────────────────────────────────────────────
+
+def chat_pipeline_sync(data: ChatRequest) -> dict:
+    """
+    Synchrone Version: Führt LLM-Call aus und gibt Ergebnis direkt zurück.
+    Kein Callback, kein Background-Task.
+    """
+    start_time = time.time()
+    try:
+        messages = build_messages(data)
+        tools = build_tools(data.skills) if data.skills else None
+        model = get_model_name(data.model)
+        all_tool_calls = []
+        all_tool_results = []
+        max_iterations = 5
+
+        for iteration in range(max_iterations):
+            call_params = {
+                "model": model,
+                "messages": messages,
+                "temperature": data.temperature,
+                "max_tokens": data.max_tokens,
+            }
+            if tools and iteration < max_iterations - 1:
+                call_params["tools"] = tools
+                call_params["tool_choice"] = "auto"
+
+            log.info("Chat %d [sync]: LLM-Call iteration %d (model=%s)", data.chat_id, iteration, model)
+            response = oai_client.chat.completions.create(**call_params)
+            choice = response.choices[0]
+
+            if not choice.message.tool_calls:
+                break
+
+            messages.append(choice.message)
+            for tc in choice.message.tool_calls:
+                tool_name = tc.function.name
+                tool_args = json.loads(tc.function.arguments)
+                log.info("Chat %d [sync]: Tool-Call → %s(%s)", data.chat_id, tool_name, tool_args)
+
+                all_tool_calls.append({"id": tc.id, "name": tool_name, "arguments": tool_args})
+                result = execute_skill(tool_name, tool_args, data.user_id)
+                all_tool_results.append({"tool_call_id": tc.id, "name": tool_name, "result": result})
+
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc.id,
+                    "content": json.dumps(result, ensure_ascii=False),
+                })
+
+        content = choice.message.content or ""
+        usage = {
+            "input_tokens": response.usage.prompt_tokens if response.usage else 0,
+            "output_tokens": response.usage.completion_tokens if response.usage else 0,
+        }
+        duration_ms = int((time.time() - start_time) * 1000)
+
+        log.info("Chat %d [sync]: Fertig. %d input, %d output tokens, %d ms",
+                 data.chat_id, usage["input_tokens"], usage["output_tokens"], duration_ms)
+
+        return {
+            "status": "completed",
+            "chat_id": data.chat_id,
+            "content": content,
+            "usage": usage,
+            "model": model,
+            "duration_ms": duration_ms,
+            "tool_calls": all_tool_calls or None,
+            "tool_results": all_tool_results or None,
+        }
+
+    except Exception as e:
+        log.error("Chat %d [sync]: Fehler — %s", data.chat_id, str(e))
+        duration_ms = int((time.time() - start_time) * 1000)
+        return {
+            "status": "error",
+            "chat_id": data.chat_id,
+            "content": f"Fehler bei der Verarbeitung: {str(e)}",
+            "usage": {"input_tokens": 0, "output_tokens": 0},
+            "model": data.model,
+            "duration_ms": duration_ms,
+        }
+
+
+# ── Chat Pipeline (Background/Async) ────────────────────────────────
 
 def chat_pipeline(data: ChatRequest):
     """
