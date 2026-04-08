@@ -24,16 +24,10 @@ from pydantic import BaseModel
 # ── Konfiguration (Umgebungsvariablen) ────────────────────────────────
 
 AI_GATEWAY_SECRET = os.environ.get("AI_GATEWAY_SECRET", "")
-
-# Provider-Switch: 'openai' (Dev/Test) oder 'azure' (Produktion/DSGVO)
-AI_PROVIDER = os.environ.get("AI_PROVIDER", "openai")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 
-# Azure OpenAI (nur wenn AI_PROVIDER=azure)
-AZURE_OPENAI_API_VERSION = os.environ.get("AZURE_OPENAI_API_VERSION", "2024-12-01-preview")
-AZURE_OPENAI_CHAT_ENDPOINT = os.environ.get("AZURE_OPENAI_CHAT_ENDPOINT", "")
-AZURE_OPENAI_CHAT_API_KEY = os.environ.get("AZURE_OPENAI_CHAT_API_KEY", "")
-AZURE_OPENAI_CHAT_DEPLOYMENT = os.environ.get("AZURE_OPENAI_CHAT_DEPLOYMENT", "gpt-4o")
+# Builder-Chat Modell (von Laravel per Coolify-Sync gesetzt)
+BUILDER_CHAT_MODEL = os.environ.get("BUILDER_CHAT_MODEL", "gpt-4o")
 
 # Laravel Callback-URLs (vom Gateway an Laravel)
 LARAVEL_CALLBACK_URL = os.environ.get("LARAVEL_CALLBACK_URL", "")
@@ -48,25 +42,15 @@ log = logging.getLogger("ai-gateway")
 oai_client = None
 
 
-# ── Provider-Switch ───────────────────────────────────────────────────
+# ── OpenAI Client ─────────────────────────────────────────────────────
 
 def get_openai_client():
-    """Erstellt OpenAI-Client basierend auf AI_PROVIDER Umgebungsvariable."""
-    if AI_PROVIDER == "azure":
-        from openai import AzureOpenAI
-        return AzureOpenAI(
-            azure_endpoint=AZURE_OPENAI_CHAT_ENDPOINT,
-            api_key=AZURE_OPENAI_CHAT_API_KEY,
-            api_version=AZURE_OPENAI_API_VERSION,
-        )
-    else:
-        return openai.OpenAI(api_key=OPENAI_API_KEY)
+    """Erstellt OpenAI-Client."""
+    return openai.OpenAI(api_key=OPENAI_API_KEY)
 
 
 def get_model_name(requested_model: str) -> str:
-    """Gibt den richtigen Modell-/Deployment-Namen zurück."""
-    if AI_PROVIDER == "azure":
-        return AZURE_OPENAI_CHAT_DEPLOYMENT
+    """Gibt den Modell-Namen zurück (direkter Passthrough)."""
     return requested_model or "gpt-4o"
 
 
@@ -76,7 +60,7 @@ def get_model_name(requested_model: str) -> str:
 async def lifespan(app: FastAPI):
     global oai_client
     oai_client = get_openai_client()
-    log.info("AI-Gateway ready. Provider=%s", AI_PROVIDER)
+    log.info("AI-Gateway ready. OpenAI key=%s", "set" if OPENAI_API_KEY else "MISSING")
     yield
 
 
@@ -607,7 +591,7 @@ Du hast das Tool `render_artifact` mit dem du **kreative, interaktive HTML/CSS/J
 async def health():
     return {
         "status": "ok",
-        "provider": AI_PROVIDER,
+        "provider": "openai",
     }
 
 
