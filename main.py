@@ -904,6 +904,15 @@ def chat_pipeline_sync(data: ChatRequest) -> dict:
         pending_images = []
         pending_pdfs = []
         artifacts = []  # Gesammelte render_artifact Ergebnisse
+        # RAG-Bilder (multimodal PDF-Seiten) für Anzeige im Chat sammeln
+        pending_rag_images = [
+            {
+                "image_b64": c["image_b64"],
+                "filename":  c.get("filename", ""),
+                "page_num":  c.get("page_num", 0),
+            }
+            for c in (rag_context or []) if c.get("has_image") and c.get("image_b64")
+        ]
         max_iterations = 5
 
         for iteration in range(max_iterations):
@@ -1154,6 +1163,8 @@ def chat_pipeline(data: ChatRequest):
             }
             if artifacts:
                 callback_data["artifacts"] = artifacts
+            if pending_rag_images:
+                callback_data["rag_images"] = pending_rag_images
             send_callback(callback_url, callback_data)
 
     except Exception as e:
@@ -1235,7 +1246,9 @@ def build_messages(data: ChatRequest, rag_context: list = None) -> list:
             source = chunk.get("filename", "Unbekannt")
             text = chunk.get("text", "")
             score = chunk.get("score", 0)
-            context_parts.append(f"[Quelle {i}: {source} (Relevanz: {score:.2f})]\n{text}")
+            page = chunk.get("page_num")
+            label = f"Quelle {i}: {source}" + (f" (Seite {page})" if page else "") + f" (Relevanz: {score:.2f})"
+            context_parts.append(f"[{label}]\n{text}")
         context_block = "\n\n".join(context_parts)
         system_parts.append(
             f"\n\n## Relevanter Kontext aus Dokumenten:\n"
@@ -1278,11 +1291,26 @@ def build_messages(data: ChatRequest, rag_context: list = None) -> list:
     # Conversation History (bereits als role/content dicts)
     messages.extend(data.conversation_history)
 
+    # RAG-Bilder aus multimodal-Chunks für Vision-LLM sammeln (max. 3)
+    rag_image_parts = []
+    if rag_context:
+        for chunk in rag_context:
+            if chunk.get("has_image") and chunk.get("image_b64"):
+                rag_image_parts.append({
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:image/jpeg;base64,{chunk['image_b64']}",
+                        "detail": "high",
+                    }
+                })
+                if len(rag_image_parts) >= 3:
+                    break
+
     # Aktuelle Nachricht (mit Vision-Bildern wenn vorhanden)
-    if data.images:
+    if data.images or rag_image_parts:
         # OpenAI Vision Format: content ist ein Array aus text + image_url Objekten
         content_parts = [{"type": "text", "text": data.message}]
-        for img in data.images:
+        for img in (data.images or []):
             media_type = img.get("media_type", "image/png")
             b64_data = img.get("data", "")
             if b64_data:
@@ -1293,8 +1321,12 @@ def build_messages(data: ChatRequest, rag_context: list = None) -> list:
                         "detail": "high",
                     }
                 })
+        content_parts.extend(rag_image_parts)
         messages.append({"role": "user", "content": content_parts})
-        log.info("Chat %d: Vision-Nachricht mit %d Bildern", data.chat_id, len(data.images))
+        if rag_image_parts:
+            log.info("Chat %d: RAG-Vision mit %d Seitenbildern", data.chat_id, len(rag_image_parts))
+        if data.images:
+            log.info("Chat %d: Vision-Nachricht mit %d Bildern", data.chat_id, len(data.images))
     else:
         messages.append({"role": "user", "content": data.message})
 
