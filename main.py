@@ -16,6 +16,7 @@ from typing import Optional
 
 import httpx
 import openai
+import requests as _requests
 from fastapi import FastAPI, Request, HTTPException, BackgroundTasks
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -28,6 +29,15 @@ OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 
 # Builder-Chat Modell (von Laravel per Coolify-Sync gesetzt)
 BUILDER_CHAT_MODEL = os.environ.get("BUILDER_CHAT_MODEL", "gpt-4o")
+
+# Bildgenerierung Modell & Provider (von Laravel per Coolify-Sync gesetzt)
+IMAGE_MODEL    = os.environ.get("IMAGE_MODEL", "gpt-image-1")
+IMAGE_PROVIDER = os.environ.get("IMAGE_PROVIDER", "openai")  # openai | google
+
+# Google Vertex AI (für Imagen – falls IMAGE_PROVIDER=google)
+GOOGLE_CREDENTIALS_BASE64 = os.environ.get("GOOGLE_CREDENTIALS_BASE64", "")
+GOOGLE_PROJECT_ID          = os.environ.get("GOOGLE_PROJECT_ID", "")
+GOOGLE_REGION              = os.environ.get("GOOGLE_REGION", "us-central1")
 
 # Laravel Callback-URLs (vom Gateway an Laravel)
 LARAVEL_CALLBACK_URL = os.environ.get("LARAVEL_CALLBACK_URL", "")
@@ -1416,12 +1426,86 @@ def _inject_artifact_hint(skill_name: str, result: dict) -> dict:
 
 # ── Helper: Bildgenerierung (Gateway-intercepted) ────────────────────
 
+def _get_google_imagen_token() -> str | None:
+    """Google OAuth2 Access Token via Service Account (JWT-Austausch)."""
+    if not GOOGLE_CREDENTIALS_BASE64:
+        return None
+    try:
+        import json as _json
+        from google.oauth2 import service_account
+        creds_json = base64.b64decode(GOOGLE_CREDENTIALS_BASE64).decode("utf-8")
+        creds_dict = _json.loads(creds_json)
+        scopes = ["https://www.googleapis.com/auth/cloud-platform"]
+        creds = service_account.Credentials.from_service_account_info(creds_dict, scopes=scopes)
+        creds.refresh(_requests.Request())
+        return creds.token
+    except Exception as e:
+        log.error("Google Imagen Auth fehlgeschlagen: %s", e)
+        return None
+
+
+def _generate_image_google(prompt: str, model: str, size: str) -> dict:
+    """Bildgenerierung via Google Vertex AI Imagen API."""
+    if not GOOGLE_PROJECT_ID:
+        return {"error": "GOOGLE_PROJECT_ID nicht konfiguriert"}
+
+    access_token = _get_google_imagen_token()
+    if not access_token:
+        return {"error": "Google Auth Token konnte nicht generiert werden"}
+
+    # Größe → Aspect-Ratio Mapping (Imagen 3 unterstützt keine freien Größen)
+    aspect_map = {
+        "1024x1024": "1:1", "1792x1024": "16:9", "1536x1024": "16:9",
+        "1024x1536": "9:16", "1024x1792": "9:16",
+        "896x1280": "9:16",  "1280x896": "16:9",
+    }
+    aspect_ratio = aspect_map.get(size, "1:1")
+
+    url = (
+        f"https://{GOOGLE_REGION}-aiplatform.googleapis.com/v1"
+        f"/projects/{GOOGLE_PROJECT_ID}/locations/{GOOGLE_REGION}"
+        f"/publishers/google/models/{model}:predict"
+    )
+    payload = {
+        "instances": [{"prompt": prompt}],
+        "parameters": {
+            "sampleCount": 1,
+            "aspectRatio": aspect_ratio,
+            "outputOptions": {"mimeType": "image/png"},
+        },
+    }
+    try:
+        resp = _requests.post(
+            url,
+            json=payload,
+            headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"},
+            timeout=120,
+        )
+        if not resp.ok:
+            return {"error": f"Google Imagen HTTP {resp.status_code}: {resp.text[:300]}"}
+
+        b64 = resp.json().get("predictions", [{}])[0].get("bytesBase64Encoded")
+        if not b64:
+            return {"error": "Google Imagen: Keine Bilddaten in der Antwort"}
+
+        return {
+            "status": "success",
+            "_image_b64": b64,
+            "prompt": prompt,
+            "size": size,
+            "quality": "standard",
+            "model": model,
+            "message": "Bild wurde erfolgreich generiert (Google Imagen).",
+        }
+    except Exception as e:
+        log.error("Google Imagen Fehler: %s", e)
+        return {"error": f"Google Imagen fehlgeschlagen: {e}"}
+
+
 def generate_image(params: dict, user_id: int, chat_id: int) -> dict:
     """
-    Generiert ein Bild über OpenAI gpt-image-1.
-    Gibt die Base64-Bilddaten im Result zurück (unter '_image_b64').
-    Die sync/stream pipeline sammelt diese und gibt sie als 'pending_images'
-    in der Response an Laravel zurück, damit Laravel das Bild lokal speichert.
+    Generiert ein Bild via OpenAI (Standard) oder Google Imagen (IMAGE_PROVIDER=google).
+    Gibt Base64-Bilddaten unter '_image_b64' zurück.
     """
     prompt = params.get("prompt", "")
     size = params.get("size", "1024x1024")
@@ -1431,12 +1515,16 @@ def generate_image(params: dict, user_id: int, chat_id: int) -> dict:
     if not prompt:
         return {"error": "Kein Prompt angegeben"}
 
-    try:
-        log.info("Bildgenerierung: prompt='%s', size=%s, quality=%s", prompt[:80], size, quality)
+    log.info("Bildgenerierung [%s/%s]: prompt='%s', size=%s", IMAGE_PROVIDER, IMAGE_MODEL, prompt[:80], size)
 
-        # OpenAI Images API aufrufen (gpt-image-1 liefert immer Base64)
+    # ── Google Imagen ────────────────────────────────────────────────
+    if IMAGE_PROVIDER == "google":
+        return _generate_image_google(prompt, IMAGE_MODEL, size)
+
+    # ── OpenAI (Standard) ────────────────────────────────────────────
+    try:
         image_response = oai_client.images.generate(
-            model="gpt-image-1",
+            model=IMAGE_MODEL,
             prompt=prompt,
             size=size,
             quality=quality,
@@ -1445,29 +1533,25 @@ def generate_image(params: dict, user_id: int, chat_id: int) -> dict:
             n=1,
         )
 
-        # Base64-Daten aus der Response extrahieren
         image_b64 = image_response.data[0].b64_json
-
         if not image_b64:
             return {"error": "Keine Bilddaten von OpenAI erhalten"}
 
-        log.info("Bild generiert: %d bytes Base64-Daten", len(image_b64))
+        log.info("Bild generiert (OpenAI): %d bytes Base64", len(image_b64))
 
-        # Base64 in _image_b64 zurückgeben (wird von der Pipeline extrahiert,
-        # NICHT an GPT gesendet — GPT bekommt nur die Metadaten)
         return {
             "status": "success",
             "_image_b64": image_b64,
             "prompt": prompt,
             "size": size,
             "quality": quality,
-            "model": "gpt-image-1",
+            "model": IMAGE_MODEL,
             "message": "Bild wurde erfolgreich generiert.",
         }
 
     except openai.BadRequestError as e:
-        log.warning("Bildgenerierung abgelehnt: %s", str(e))
-        return {"error": f"Bildgenerierung wurde abgelehnt (Content Policy): {str(e)}"}
+        log.warning("Bildgenerierung abgelehnt (Content Policy): %s", str(e))
+        return {"error": f"Bildgenerierung abgelehnt (Content Policy): {str(e)}"}
     except Exception as e:
         log.error("Bildgenerierung Fehler: %s", str(e))
         return {"error": f"Bildgenerierung fehlgeschlagen: {str(e)}"}
