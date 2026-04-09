@@ -513,9 +513,13 @@ async def extract_contacts(payload: ExtractContactsRequest, request: Request):
 
         # ── CSV / Excel / ODS → Zeilen → chunked ──────────────────────────
         else:
-            # Datei parsen (bestehende Logik wiederverwenden)
-            parse_result = _parse_file(content_bytes, payload.file_name, ft)
-            sheets = parse_result.get("sheets", [])
+            if ft in ("csv", "txt", "tsv"):
+                sheet = parse_csv_bytes(content_bytes)
+                sheets = [sheet]
+            elif ft in ("xlsx", "xls", "ods", "xlsm"):
+                sheets = parse_excel_bytes(content_bytes)
+            else:
+                raise HTTPException(415, f"Nicht unterstütztes Format: {ft}")
 
             for sheet in sheets:
                 rows = sheet.get("rows", [])
