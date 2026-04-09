@@ -413,8 +413,12 @@ def _extract_pdf_text(content_bytes: bytes) -> str:
 
 async def _call_gpt_extract(content_text: str | None, image_b64: str | None,
                              image_mime: str | None, exclude_identity: dict,
-                             available_fields: list[str]) -> dict:
-    """Ruft GPT-4o zur Kontakt-Extraktion auf. Entweder Text oder Bild."""
+                             available_fields: list[str],
+                             _max_tokens: int = 16000,
+                             _attempt: int = 1) -> dict:
+    """Ruft GPT-4o zur Kontakt-Extraktion auf. Entweder Text oder Bild.
+    Bei Truncation (finish_reason=='length') wird automatisch mit höherem
+    Token-Limit erneut versucht (max 2 Versuche)."""
 
     # Exclude-Hinweis aufbauen
     exclude_parts = []
@@ -453,17 +457,55 @@ async def _call_gpt_extract(content_text: str | None, image_b64: str | None,
         ],
         response_format={"type": "json_object"},
         temperature=0.1,
-        max_tokens=4000,
+        max_tokens=_max_tokens,
     )
+
+    finish_reason = response.choices[0].finish_reason
     raw = response.choices[0].message.content or "{}"
+
+    # Truncation-Erkennung: GPT wurde mitten im JSON abgeschnitten
+    if finish_reason == "length":
+        log.warning("GPT-Extraktion truncated (finish_reason=length, max_tokens=%d, attempt=%d)",
+                     _max_tokens, _attempt)
+        # Einmal mit doppeltem Limit retry (max 2 Versuche)
+        if _attempt < 2:
+            return await _call_gpt_extract(
+                content_text=content_text, image_b64=image_b64,
+                image_mime=image_mime, exclude_identity=exclude_identity,
+                available_fields=available_fields,
+                _max_tokens=min(_max_tokens * 2, 16384),
+                _attempt=_attempt + 1,
+            )
+        # Nach 2 Versuchen: so viel wie möglich retten
+        log.error("GPT-Extraktion nach %d Versuchen immer noch truncated — versuche partielle Rettung", _attempt)
+        try:
+            # Versuche das unvollständige JSON trotzdem zu parsen
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            return {"contacts": [], "organizations": [],
+                    "chunk_notes": f"Antwort wurde nach {_max_tokens} Tokens abgeschnitten und konnte nicht geparst werden."}
+
     return json.loads(raw)
+
+
+def _log_gpt_result(result: dict, source: str, file_name: str) -> None:
+    """Loggt GPT-Ergebnis direkt nach dem Call — bevor irgendetwas gefiltert wird."""
+    contacts = result.get("contacts", [])
+    orgs = result.get("organizations", [])
+    notes = result.get("chunk_notes", "")
+    if contacts:
+        log.info("extract-contacts [%s] %s: %d Kontakte, %d Orgs gefunden. Notes: %s",
+                 source, file_name, len(contacts), len(orgs), notes or "(keine)")
+    else:
+        log.warning("extract-contacts [%s] %s: 0 Kontakte gefunden. Notes: %s",
+                    source, file_name, notes or "(keine)")
 
 
 @router.post("/import/extract-contacts")
 async def extract_contacts(payload: ExtractContactsRequest, request: Request):
     """
     GPT-4o extrahiert Kontakte + Organisationen aus beliebigen Dateien.
-    CSV/Excel: chunked rows (200 Zeilen je Chunk).
+    CSV/Excel: chunked rows (50 Zeilen je Chunk).
     PDF: Text-Extraktion dann chunked.
     Bilder (JPG/PNG/WebP): direkt GPT-4o Vision.
     """
@@ -486,6 +528,7 @@ async def extract_contacts(payload: ExtractContactsRequest, request: Request):
                 exclude_identity=payload.exclude_identity,
                 available_fields=payload.available_fields,
             )
+            _log_gpt_result(result, "vision", payload.file_name)
             all_contacts.extend(result.get("contacts", []))
             all_orgs.extend(result.get("organizations", []))
             if result.get("chunk_notes"):
@@ -495,17 +538,22 @@ async def extract_contacts(payload: ExtractContactsRequest, request: Request):
         elif ft == "pdf":
             pdf_text = _extract_pdf_text(content_bytes)
             if not pdf_text.strip():
+                log.warning("extract-contacts [pdf] %s: pdfplumber lieferte keinen Text", payload.file_name)
                 return {"contacts": [], "organizations": [], "notes": "PDF enthielt keinen lesbaren Text."}
+
+            log.info("extract-contacts [pdf] %s: %d Zeichen Text extrahiert", payload.file_name, len(pdf_text))
+
             # In Blöcke von ~6000 Zeichen aufteilen (ca. 1500 Tokens)
             chunk_size = 6000
             chunks = [pdf_text[i:i+chunk_size] for i in range(0, len(pdf_text), chunk_size)]
-            for chunk in chunks:
+            for ci, chunk in enumerate(chunks):
                 result = await _call_gpt_extract(
                     content_text=chunk,
                     image_b64=None, image_mime=None,
                     exclude_identity=payload.exclude_identity,
                     available_fields=payload.available_fields,
                 )
+                _log_gpt_result(result, f"pdf-chunk-{ci+1}/{len(chunks)}", payload.file_name)
                 all_contacts.extend(result.get("contacts", []))
                 all_orgs.extend(result.get("organizations", []))
                 if result.get("chunk_notes"):
@@ -526,11 +574,13 @@ async def extract_contacts(payload: ExtractContactsRequest, request: Request):
                 headers = sheet.get("headers", [])
                 sheet_name = sheet.get("name", "")
 
-                # Alle Zeilen inkl. Header als Text-Tabelle, in 200er-Chunks
+                # Alle Zeilen inkl. Header als Text-Tabelle, in 50er-Chunks
                 all_rows = [headers] + rows if headers else rows
-                chunk_size = 200
+                chunk_size = 50
+                total_chunks = (len(all_rows) + chunk_size - 1) // chunk_size
 
                 for chunk_start in range(0, len(all_rows), chunk_size):
+                    chunk_idx = chunk_start // chunk_size + 1
                     chunk = all_rows[chunk_start:chunk_start + chunk_size]
                     text = f"Sheet: {sheet_name}\n" + _rows_to_text_table(chunk)
                     result = await _call_gpt_extract(
@@ -539,6 +589,7 @@ async def extract_contacts(payload: ExtractContactsRequest, request: Request):
                         exclude_identity=payload.exclude_identity,
                         available_fields=payload.available_fields,
                     )
+                    _log_gpt_result(result, f"{sheet_name}-chunk-{chunk_idx}/{total_chunks}", payload.file_name)
                     all_contacts.extend(result.get("contacts", []))
                     all_orgs.extend(result.get("organizations", []))
                     if result.get("chunk_notes"):
@@ -550,6 +601,9 @@ async def extract_contacts(payload: ExtractContactsRequest, request: Request):
     except Exception as e:
         log.error("extract-contacts: Fehler: %s", e, exc_info=True)
         raise HTTPException(500, f"Extraktion fehlgeschlagen: {str(e)}")
+
+    log.info("extract-contacts FERTIG [%s] %s: %d Kontakte, %d Orgs total",
+             ft, payload.file_name, len(all_contacts), len(all_orgs))
 
     return {
         "contacts":      all_contacts,
