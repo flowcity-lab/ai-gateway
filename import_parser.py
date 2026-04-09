@@ -7,6 +7,7 @@ Endpoints:
   POST /import/analyze-columns   — GPT-4o analysiert Spalten anhand von Werten + schlägt Custom Fields vor
 """
 
+import asyncio
 import io
 import csv
 import json
@@ -488,6 +489,10 @@ async def _call_gpt_extract(content_text: str | None, image_b64: str | None,
     return json.loads(raw)
 
 
+# Semaphore: max 5 parallele GPT-Calls (Rate-Limit-Schutz)
+_gpt_semaphore = asyncio.Semaphore(5)
+
+
 def _log_gpt_result(result: dict, source: str, file_name: str) -> None:
     """Loggt GPT-Ergebnis direkt nach dem Call — bevor irgendetwas gefiltert wird."""
     contacts = result.get("contacts", [])
@@ -501,12 +506,39 @@ def _log_gpt_result(result: dict, source: str, file_name: str) -> None:
                     source, file_name, notes or "(keine)")
 
 
+async def _extract_chunk(content_text: str | None, image_b64: str | None,
+                          image_mime: str | None, exclude_identity: dict,
+                          available_fields: list[str], label: str,
+                          file_name: str) -> dict:
+    """Einen Chunk mit Semaphore-Schutz extrahieren."""
+    async with _gpt_semaphore:
+        result = await _call_gpt_extract(
+            content_text=content_text,
+            image_b64=image_b64, image_mime=image_mime,
+            exclude_identity=exclude_identity,
+            available_fields=available_fields,
+        )
+        _log_gpt_result(result, label, file_name)
+        return result
+
+
+def _collect_results(results: list[dict]) -> tuple[list[dict], list[dict], list[str]]:
+    """Sammelt Kontakte, Orgs und Notes aus mehreren Chunk-Ergebnissen."""
+    contacts, orgs, notes = [], [], []
+    for r in results:
+        contacts.extend(r.get("contacts", []))
+        orgs.extend(r.get("organizations", []))
+        if r.get("chunk_notes"):
+            notes.append(r["chunk_notes"])
+    return contacts, orgs, notes
+
+
 @router.post("/import/extract-contacts")
 async def extract_contacts(payload: ExtractContactsRequest, request: Request):
     """
     GPT-4o extrahiert Kontakte + Organisationen aus beliebigen Dateien.
-    CSV/Excel: chunked rows (50 Zeilen je Chunk).
-    PDF: Text-Extraktion dann chunked.
+    CSV/Excel: chunked rows (50 Zeilen je Chunk), parallel (max 5).
+    PDF: Text-Extraktion dann chunked parallel.
     Bilder (JPG/PNG/WebP): direkt GPT-4o Vision.
     """
     content_bytes = base64.b64decode(payload.file_content_base64)
@@ -521,45 +553,49 @@ async def extract_contacts(payload: ExtractContactsRequest, request: Request):
         IMAGE_TYPES = {"jpg": "image/jpeg", "jpeg": "image/jpeg",
                        "png": "image/png", "webp": "image/webp", "heic": "image/heic"}
         if ft in IMAGE_TYPES:
-            result = await _call_gpt_extract(
+            result = await _extract_chunk(
                 content_text=None,
-                image_b64=payload.file_content_base64,
-                image_mime=IMAGE_TYPES[ft],
+                image_b64=payload.file_content_base64, image_mime=IMAGE_TYPES[ft],
                 exclude_identity=payload.exclude_identity,
                 available_fields=payload.available_fields,
+                label="vision", file_name=payload.file_name,
             )
-            _log_gpt_result(result, "vision", payload.file_name)
             all_contacts.extend(result.get("contacts", []))
             all_orgs.extend(result.get("organizations", []))
             if result.get("chunk_notes"):
                 all_notes.append(result["chunk_notes"])
 
-        # ── PDF → Text → chunked ───────────────────────────────────────────
+        # ── PDF → Text → chunked parallel ──────────────────────────────────
         elif ft == "pdf":
             pdf_text = _extract_pdf_text(content_bytes)
             if not pdf_text.strip():
                 log.warning("extract-contacts [pdf] %s: pdfplumber lieferte keinen Text", payload.file_name)
                 return {"contacts": [], "organizations": [], "notes": "PDF enthielt keinen lesbaren Text."}
 
-            log.info("extract-contacts [pdf] %s: %d Zeichen Text extrahiert", payload.file_name, len(pdf_text))
+            log.info("extract-contacts [pdf] %s: %d Zeichen Text extrahiert. Erste 500 Zeichen:\n%s",
+                     payload.file_name, len(pdf_text), pdf_text[:500])
 
-            # In Blöcke von ~6000 Zeichen aufteilen (ca. 1500 Tokens)
             chunk_size = 6000
-            chunks = [pdf_text[i:i+chunk_size] for i in range(0, len(pdf_text), chunk_size)]
-            for ci, chunk in enumerate(chunks):
-                result = await _call_gpt_extract(
-                    content_text=chunk,
-                    image_b64=None, image_mime=None,
+            text_chunks = [pdf_text[i:i+chunk_size] for i in range(0, len(pdf_text), chunk_size)]
+            total = len(text_chunks)
+
+            # Alle PDF-Chunks parallel
+            tasks = [
+                _extract_chunk(
+                    content_text=chunk, image_b64=None, image_mime=None,
                     exclude_identity=payload.exclude_identity,
                     available_fields=payload.available_fields,
+                    label=f"pdf-chunk-{i+1}/{total}", file_name=payload.file_name,
                 )
-                _log_gpt_result(result, f"pdf-chunk-{ci+1}/{len(chunks)}", payload.file_name)
-                all_contacts.extend(result.get("contacts", []))
-                all_orgs.extend(result.get("organizations", []))
-                if result.get("chunk_notes"):
-                    all_notes.append(result["chunk_notes"])
+                for i, chunk in enumerate(text_chunks)
+            ]
+            results = await asyncio.gather(*tasks)
+            c, o, n = _collect_results(results)
+            all_contacts.extend(c)
+            all_orgs.extend(o)
+            all_notes.extend(n)
 
-        # ── CSV / Excel / ODS → Zeilen → chunked ──────────────────────────
+        # ── CSV / Excel / ODS → Zeilen → chunked parallel ─────────────────
         else:
             if ft in ("csv", "txt", "tsv"):
                 sheet = parse_csv_bytes(content_bytes)
@@ -574,26 +610,30 @@ async def extract_contacts(payload: ExtractContactsRequest, request: Request):
                 headers = sheet.get("headers", [])
                 sheet_name = sheet.get("name", "")
 
-                # Alle Zeilen inkl. Header als Text-Tabelle, in 50er-Chunks
                 all_rows = [headers] + rows if headers else rows
                 chunk_size = 50
                 total_chunks = (len(all_rows) + chunk_size - 1) // chunk_size
 
+                # Alle Chunks dieser Sheet parallel
+                tasks = []
                 for chunk_start in range(0, len(all_rows), chunk_size):
                     chunk_idx = chunk_start // chunk_size + 1
                     chunk = all_rows[chunk_start:chunk_start + chunk_size]
                     text = f"Sheet: {sheet_name}\n" + _rows_to_text_table(chunk)
-                    result = await _call_gpt_extract(
-                        content_text=text,
-                        image_b64=None, image_mime=None,
+                    tasks.append(_extract_chunk(
+                        content_text=text, image_b64=None, image_mime=None,
                         exclude_identity=payload.exclude_identity,
                         available_fields=payload.available_fields,
-                    )
-                    _log_gpt_result(result, f"{sheet_name}-chunk-{chunk_idx}/{total_chunks}", payload.file_name)
-                    all_contacts.extend(result.get("contacts", []))
-                    all_orgs.extend(result.get("organizations", []))
-                    if result.get("chunk_notes"):
-                        all_notes.append(f"[{sheet_name}] {result['chunk_notes']}")
+                        label=f"{sheet_name}-chunk-{chunk_idx}/{total_chunks}",
+                        file_name=payload.file_name,
+                    ))
+
+                results = await asyncio.gather(*tasks)
+                c, o, n = _collect_results(results)
+                all_contacts.extend(c)
+                all_orgs.extend(o)
+                for note in n:
+                    all_notes.append(f"[{sheet_name}] {note}")
 
     except json.JSONDecodeError as e:
         log.error("extract-contacts: Ungültiges JSON von GPT: %s", e)
