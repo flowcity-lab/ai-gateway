@@ -22,6 +22,8 @@ from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+from import_parser import router as import_parser_router
+
 # ── Konfiguration (Umgebungsvariablen) ────────────────────────────────
 
 AI_GATEWAY_SECRET = os.environ.get("AI_GATEWAY_SECRET", "")
@@ -84,6 +86,9 @@ app.add_middleware(
     allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
+
+# ── Import-Parser Router ─────────────────────────────────────────────
+app.include_router(import_parser_router)
 
 # ── Stream-Token Store (kurzlebig, in-memory) ────────────────────────
 # Token → {data: ChatRequest-dict, created_at: timestamp}
