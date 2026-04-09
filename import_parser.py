@@ -321,6 +321,8 @@ async def analyze_columns(payload: AnalyzeColumnsRequest, request: Request):
         )
         raw_json = response.choices[0].message.content or "{}"
         result = json.loads(raw_json)
+        analyze_tokens_in  = response.usage.prompt_tokens     if response.usage else 0
+        analyze_tokens_out = response.usage.completion_tokens if response.usage else 0
     except json.JSONDecodeError as e:
         log.error("analyze-columns: Ungültiges JSON von GPT: %s", e)
         raise HTTPException(500, "GPT hat kein valides JSON zurückgegeben")
@@ -339,6 +341,8 @@ async def analyze_columns(payload: AnalyzeColumnsRequest, request: Request):
         "custom_field_suggestions": result.get("custom_field_suggestions", []),
         "notes":                    result.get("notes", ""),
         "model_used":               _ANALYZE_MODEL,
+        "tokens_input":             analyze_tokens_in,
+        "tokens_output":            analyze_tokens_out,
     }
 
 
@@ -587,7 +591,9 @@ async def _call_gpt_extract(content_text: str | None, image_b64: str | None,
                              image_mime: str | None, exclude_identity: dict,
                              available_fields: list[str],
                              _max_tokens: int = 16000,
-                             _attempt: int = 1) -> dict:
+                             _attempt: int = 1,
+                             _prev_tokens_in: int = 0,
+                             _prev_tokens_out: int = 0) -> dict:
     """Ruft GPT-4o zur Kontakt-Extraktion auf. Entweder Text oder Bild.
     Bei Truncation (finish_reason=='length') wird automatisch mit höherem
     Token-Limit erneut versucht (max 2 Versuche)."""
@@ -643,6 +649,10 @@ async def _call_gpt_extract(content_text: str | None, image_b64: str | None,
     finish_reason = response.choices[0].finish_reason
     raw = response.choices[0].message.content or "{}"
 
+    # Echte Token-Zahlen aus der API-Response
+    this_tokens_in  = response.usage.prompt_tokens     if response.usage else 0
+    this_tokens_out = response.usage.completion_tokens if response.usage else 0
+
     # Truncation-Erkennung: GPT wurde mitten im JSON abgeschnitten
     if finish_reason == "length":
         log.warning("GPT-Extraktion truncated (finish_reason=length, max_tokens=%d, attempt=%d)",
@@ -655,17 +665,24 @@ async def _call_gpt_extract(content_text: str | None, image_b64: str | None,
                 available_fields=available_fields,
                 _max_tokens=min(_max_tokens * 2, 16384),
                 _attempt=_attempt + 1,
+                _prev_tokens_in=_prev_tokens_in + this_tokens_in,
+                _prev_tokens_out=_prev_tokens_out + this_tokens_out,
             )
         # Nach 2 Versuchen: so viel wie möglich retten
         log.error("GPT-Extraktion nach %d Versuchen immer noch truncated — versuche partielle Rettung", _attempt)
         try:
-            # Versuche das unvollständige JSON trotzdem zu parsen
-            return json.loads(raw)
+            data = json.loads(raw)
         except json.JSONDecodeError:
-            return {"contacts": [], "organizations": [],
+            data = {"contacts": [], "organizations": [],
                     "chunk_notes": f"Antwort wurde nach {_max_tokens} Tokens abgeschnitten und konnte nicht geparst werden."}
+        data["_tokens_in"]  = _prev_tokens_in  + this_tokens_in
+        data["_tokens_out"] = _prev_tokens_out + this_tokens_out
+        return data
 
-    return json.loads(raw)
+    data = json.loads(raw)
+    data["_tokens_in"]  = _prev_tokens_in  + this_tokens_in
+    data["_tokens_out"] = _prev_tokens_out + this_tokens_out
+    return data
 
 
 # Semaphore: max 5 parallele GPT-Calls (Rate-Limit-Schutz)
@@ -701,15 +718,18 @@ async def _extract_chunk(content_text: str | None, image_b64: str | None,
         return result
 
 
-def _collect_results(results: list[dict]) -> tuple[list[dict], list[dict], list[str]]:
-    """Sammelt Kontakte, Orgs und Notes aus mehreren Chunk-Ergebnissen."""
+def _collect_results(results: list[dict]) -> tuple[list[dict], list[dict], list[str], int, int]:
+    """Sammelt Kontakte, Orgs, Notes und Token-Summen aus mehreren Chunk-Ergebnissen."""
     contacts, orgs, notes = [], [], []
+    tokens_in, tokens_out = 0, 0
     for r in results:
         contacts.extend(r.get("contacts", []))
         orgs.extend(r.get("organizations", []))
         if r.get("chunk_notes"):
             notes.append(r["chunk_notes"])
-    return contacts, orgs, notes
+        tokens_in  += r.get("_tokens_in",  0)
+        tokens_out += r.get("_tokens_out", 0)
+    return contacts, orgs, notes, tokens_in, tokens_out
 
 
 @router.post("/import/extract-contacts")
@@ -728,6 +748,8 @@ async def extract_contacts(payload: ExtractContactsRequest, request: Request):
     all_contacts: list[dict] = []
     all_orgs: list[dict] = []
     all_notes: list[str] = []
+    all_tokens_in:  int = 0
+    all_tokens_out: int = 0
 
     try:
         # ── Bilder → GPT Vision ────────────────────────────────────────────
@@ -746,6 +768,8 @@ async def extract_contacts(payload: ExtractContactsRequest, request: Request):
             all_orgs.extend(result.get("organizations", []))
             if result.get("chunk_notes"):
                 all_notes.append(result["chunk_notes"])
+            all_tokens_in  += result.get("_tokens_in",  0)
+            all_tokens_out += result.get("_tokens_out", 0)
 
         # ── PDF → Text → chunked parallel → Vision-Fallback ────────────────
         elif ft == "pdf":
@@ -770,10 +794,12 @@ async def extract_contacts(payload: ExtractContactsRequest, request: Request):
                     for i, chunk in enumerate(text_chunks)
                 ]
                 results = await asyncio.gather(*tasks)
-                c, o, n = _collect_results(results)
+                c, o, n, ti, to = _collect_results(results)
                 all_contacts.extend(c)
                 all_orgs.extend(o)
                 all_notes.extend(n)
+                all_tokens_in  += ti
+                all_tokens_out += to
 
             # Vision-Fallback: wenn Text-Extraktion 0 Kontakte liefert oder kein Text vorhanden
             if not all_contacts:
@@ -793,7 +819,9 @@ async def extract_contacts(payload: ExtractContactsRequest, request: Request):
                         for i, img_b64 in enumerate(page_images)
                     ]
                     vision_results = await asyncio.gather(*vision_tasks)
-                    vc, vo, vn = _collect_results(vision_results)
+                    vc, vo, vn, vti, vto = _collect_results(vision_results)
+                    all_tokens_in  += vti
+                    all_tokens_out += vto
                     if vc:
                         log.info("extract-contacts [pdf-vision-fallback] %s: Vision fand %d Kontakte!",
                                  payload.file_name, len(vc))
@@ -855,10 +883,12 @@ async def extract_contacts(payload: ExtractContactsRequest, request: Request):
                     for i, chunk in enumerate(text_chunks)
                 ]
                 results = await asyncio.gather(*tasks)
-                c, o, n = _collect_results(results)
+                c, o, n, ti, to = _collect_results(results)
                 all_contacts.extend(c)
                 all_orgs.extend(o)
                 all_notes.extend(n)
+                all_tokens_in  += ti
+                all_tokens_out += to
 
         # ── CSV / Excel / ODS → Zeilen → chunked parallel ─────────────────
         elif ft in ("csv", "txt", "tsv"):
@@ -888,11 +918,13 @@ async def extract_contacts(payload: ExtractContactsRequest, request: Request):
                     ))
 
                 results = await asyncio.gather(*tasks)
-                c, o, n = _collect_results(results)
+                c, o, n, ti, to = _collect_results(results)
                 all_contacts.extend(c)
                 all_orgs.extend(o)
                 for note in n:
                     all_notes.append(f"[{sheet_name}] {note}")
+                all_tokens_in  += ti
+                all_tokens_out += to
 
         elif ft in ("xlsx", "xls", "ods", "xlsm"):
             sheets = parse_excel_bytes(content_bytes)
@@ -920,11 +952,13 @@ async def extract_contacts(payload: ExtractContactsRequest, request: Request):
                     ))
 
                 results = await asyncio.gather(*tasks)
-                c, o, n = _collect_results(results)
+                c, o, n, ti, to = _collect_results(results)
                 all_contacts.extend(c)
                 all_orgs.extend(o)
                 for note in n:
                     all_notes.append(f"[{sheet_name}] {note}")
+                all_tokens_in  += ti
+                all_tokens_out += to
 
         else:
             raise HTTPException(415, f"Nicht unterstütztes Format: {ft}")
@@ -936,14 +970,16 @@ async def extract_contacts(payload: ExtractContactsRequest, request: Request):
         log.error("extract-contacts: Fehler: %s", e, exc_info=True)
         raise HTTPException(500, f"Extraktion fehlgeschlagen: {str(e)}")
 
-    log.info("extract-contacts FERTIG [%s] %s: %d Kontakte, %d Orgs total",
-             ft, payload.file_name, len(all_contacts), len(all_orgs))
+    log.info("extract-contacts FERTIG [%s] %s: %d Kontakte, %d Orgs total, %d/%d Tokens",
+             ft, payload.file_name, len(all_contacts), len(all_orgs), all_tokens_in, all_tokens_out)
 
     return {
         "contacts":      all_contacts,
         "organizations": all_orgs,
         "notes":         " | ".join(all_notes),
         "total_found":   len(all_contacts),
+        "tokens_input":  all_tokens_in,
+        "tokens_output": all_tokens_out,
     }
 
 
