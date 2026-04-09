@@ -14,6 +14,7 @@ import json
 import base64
 import logging
 import os
+import re
 from typing import Optional
 
 import chardet
@@ -974,6 +975,26 @@ def _normalize_single(raw: str, fallback: Optional[str], candidates: list[str], 
             parsed = phonenumbers.parse(raw, fallback)
             if phonenumbers.is_valid_number(parsed):
                 country = phonenumbers.region_code_for_number(parsed)
+                return {
+                    "e164": phonenumbers.format_number(parsed, phonenumbers.PhoneNumberFormat.E164),
+                    "country": country,
+                    "confidence": "medium",
+                    "possible_countries": [country],
+                    "national_format": phonenumbers.format_number(parsed, phonenumbers.PhoneNumberFormat.NATIONAL),
+                }
+        except Exception:
+            pass
+
+    # Schritt 2b: Führende 0 wieder hinzufügen (Excel schneidet sie ab)
+    # z.B. "677 125 511" → "0677 125 511" → valide AT-Mobilnummer
+    digits_only = re.sub(r'[^\d]', '', raw)
+    if fallback and digits_only and not digits_only.startswith('0') and not raw.startswith('+'):
+        raw_with_zero = "0" + raw.lstrip()
+        try:
+            parsed = phonenumbers.parse(raw_with_zero, fallback)
+            if phonenumbers.is_valid_number(parsed):
+                country = phonenumbers.region_code_for_number(parsed)
+                log.debug("Telefon: führende 0 ergänzt: '%s' → '%s' (%s)", raw, raw_with_zero, country)
                 return {
                     "e164": phonenumbers.format_number(parsed, phonenumbers.PhoneNumberFormat.E164),
                     "country": country,
