@@ -11,4 +11,9 @@ openpyxl
 phonenumbers
 chardet
 pdfplumber
+PyMuPDF
+python-docx
+vobject
+striprtf
+odfpy
 

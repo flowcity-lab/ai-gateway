@@ -48,7 +48,7 @@ class AnalyzeColumnsRequest(BaseModel):
 class ExtractContactsRequest(BaseModel):
     file_content_base64: str
     file_name: str
-    file_type: str                              # csv, xlsx, xls, ods, pdf, jpg, png, webp, heic
+    file_type: str                              # csv, xlsx, xls, ods, pdf, jpg, png, webp, heic, tif, bmp, docx, rtf, odt, vcf, eml
     exclude_identity: dict = {}                 # Trainer-eigene Daten: names, emails, phones, company_name
     available_fields: list[str] = []            # System + Custom Fields die der Trainer hat
     chunk_index: int = 0                        # Intern für chunked processing
@@ -353,6 +353,13 @@ Regeln:
 6. Gib nur echte Kontaktdaten zurück — keine Platzhalter, keine Beispieldaten.
 7. confidence: 0.0-1.0 (wie sicher bist du dass das ein echter Kontakt ist)
 
+CUSTOM FIELDS — WICHTIG:
+8. Die Standardfelder sind: first_name, last_name, email, phone, organization_name, organization_role, date_of_birth, notes.
+9. ALLE weiteren Informationen pro Kontakt gehören in "custom_fields" — z.B. Adresse, Stadt, PLZ, Land, Region, Branche, Beruf, Titel, Website, Kundennummer, Abteilung, Geschlecht, Sprache, etc.
+10. Wenn der Trainer bereits eigene Custom-Felder hat (werden im User-Prompt angegeben), verwende EXAKT deren Namen als Keys.
+11. Für neue Felder: verwende aussagekräftige, kurze deutsche Feldnamen als Keys (z.B. "Straße", "PLZ", "Stadt", "Land", "Branche", "Website").
+12. Adressfelder IMMER einzeln aufteilen: "Straße", "PLZ", "Stadt", "Land" — NICHT als ein zusammengesetztes Feld.
+
 Antworte ausschließlich mit validem JSON:
 {
   "contacts": [
@@ -363,10 +370,16 @@ Antworte ausschließlich mit validem JSON:
       "email": "stefan@example.at",
       "phone": "+43 664 123 45 67",
       "organization_name": "Ärztekammer Vorarlberg",
-      "organization_role": null,
+      "organization_role": "Vorstandsmitglied",
       "date_of_birth": null,
       "notes": null,
-      "custom_fields": {},
+      "custom_fields": {
+        "Straße": "Schulgasse 17",
+        "PLZ": "6850",
+        "Stadt": "Dornbirn",
+        "Land": "Österreich",
+        "Branche": "Gesundheitswesen"
+      },
       "confidence": 0.95,
       "source_hint": "Zeile 5"
     }
@@ -412,6 +425,163 @@ def _extract_pdf_text(content_bytes: bytes) -> str:
         return ""
 
 
+def _extract_docx_text(content_bytes: bytes) -> str:
+    """Extrahiert Text + Tabellen aus Word-Dokumenten (.docx)."""
+    try:
+        from docx import Document
+        doc = Document(io.BytesIO(content_bytes))
+        parts = []
+        # Absätze
+        for para in doc.paragraphs:
+            text = para.text.strip()
+            if text:
+                parts.append(text)
+        # Tabellen
+        for table in doc.tables:
+            for row in table.rows:
+                cells = [cell.text.strip() for cell in row.cells]
+                if any(cells):
+                    parts.append(" | ".join(cells))
+        return "\n".join(parts)
+    except Exception as e:
+        log.warning("DOCX-Extraktion fehlgeschlagen: %s", e)
+        return ""
+
+
+def _extract_rtf_text(content_bytes: bytes) -> str:
+    """Extrahiert Text aus RTF-Dateien."""
+    try:
+        from striprtf.striprtf import rtf_to_text
+        rtf_content = content_bytes.decode("utf-8", errors="replace")
+        return rtf_to_text(rtf_content)
+    except Exception as e:
+        log.warning("RTF-Extraktion fehlgeschlagen: %s", e)
+        return ""
+
+
+def _extract_odt_text(content_bytes: bytes) -> str:
+    """Extrahiert Text aus OpenDocument-Textdateien (.odt)."""
+    try:
+        from odf.opendocument import load as odf_load
+        from odf.text import P
+        from odf import teletype
+        doc = odf_load(io.BytesIO(content_bytes))
+        parts = []
+        for p in doc.getElementsByType(P):
+            text = teletype.extractText(p).strip()
+            if text:
+                parts.append(text)
+        return "\n".join(parts)
+    except Exception as e:
+        log.warning("ODT-Extraktion fehlgeschlagen: %s", e)
+        return ""
+
+
+def _extract_eml_text(content_bytes: bytes) -> str:
+    """Extrahiert Absender, Empfänger und Text aus E-Mail-Dateien (.eml)."""
+    try:
+        import email
+        from email import policy
+        msg = email.message_from_bytes(content_bytes, policy=policy.default)
+        parts = []
+        # Header-Infos (Kontaktdaten!)
+        for header in ["From", "To", "Cc", "Bcc", "Reply-To"]:
+            val = msg.get(header)
+            if val:
+                parts.append(f"{header}: {val}")
+        # Subject
+        if msg.get("Subject"):
+            parts.append(f"Betreff: {msg['Subject']}")
+        # Body
+        body = msg.get_body(preferencelist=("plain", "html"))
+        if body:
+            text = body.get_content()
+            if isinstance(text, bytes):
+                text = text.decode("utf-8", errors="replace")
+            parts.append(f"\n--- E-Mail-Text ---\n{text}")
+        return "\n".join(parts)
+    except Exception as e:
+        log.warning("EML-Extraktion fehlgeschlagen: %s", e)
+        return ""
+
+
+def _parse_vcf(content_bytes: bytes) -> list[dict]:
+    """Parst vCard-Dateien mechanisch — kein GPT nötig.
+    Gibt eine Liste von Kontakt-Dicts zurück (gleiches Schema wie GPT-Extraktion)."""
+    try:
+        import vobject
+        text = content_bytes.decode("utf-8", errors="replace")
+        contacts = []
+        for vcard in vobject.readComponents(text):
+            contact: dict = {}
+            # Name
+            if hasattr(vcard, "n"):
+                n = vcard.n.value
+                contact["first_name"] = n.given or ""
+                contact["last_name"] = n.family or ""
+            elif hasattr(vcard, "fn"):
+                parts = vcard.fn.value.split(" ", 1)
+                contact["first_name"] = parts[0] if parts else ""
+                contact["last_name"] = parts[1] if len(parts) > 1 else ""
+            # E-Mail
+            if hasattr(vcard, "email"):
+                contact["email"] = vcard.email.value
+            # Telefon
+            if hasattr(vcard, "tel"):
+                contact["phone"] = vcard.tel.value
+            # Organisation
+            if hasattr(vcard, "org"):
+                org_val = vcard.org.value
+                contact["organization"] = org_val[0] if isinstance(org_val, list) else str(org_val)
+            # Titel/Position
+            if hasattr(vcard, "title"):
+                contact["position"] = vcard.title.value
+            # Adresse
+            if hasattr(vcard, "adr"):
+                adr = vcard.adr.value
+                if adr.street:
+                    contact["street"] = adr.street
+                if adr.city:
+                    contact["city"] = adr.city
+                if adr.code:
+                    contact["zip"] = adr.code
+                if adr.country:
+                    contact["country"] = adr.country
+            # Website
+            if hasattr(vcard, "url"):
+                contact["website"] = vcard.url.value
+            # Nur hinzufügen wenn mindestens Name oder E-Mail vorhanden
+            if contact.get("first_name") or contact.get("last_name") or contact.get("email"):
+                contacts.append(contact)
+        log.info("vCard: %d Kontakte mechanisch geparst", len(contacts))
+        return contacts
+    except Exception as e:
+        log.warning("vCard-Parsing fehlgeschlagen: %s", e)
+        return []
+
+
+def _pdf_pages_to_images(content_bytes: bytes, dpi: int = 150) -> list[str]:
+    """Rendert PDF-Seiten als PNG-Bilder und gibt Base64-Strings zurück."""
+    try:
+        import fitz  # PyMuPDF
+        doc = fitz.open(stream=content_bytes, filetype="pdf")
+        images = []
+        for page in doc:
+            mat = fitz.Matrix(dpi / 72, dpi / 72)
+            pix = page.get_pixmap(matrix=mat)
+            img_bytes = pix.tobytes("png")
+            images.append(base64.b64encode(img_bytes).decode("utf-8"))
+        doc.close()
+        log.info("PDF→Bilder: %d Seiten gerendert (%d DPI)", len(images), dpi)
+        return images
+    except ImportError:
+        log.error("PyMuPDF nicht installiert — PDF-Vision-Fallback nicht verfügbar")
+        return []
+    except Exception as e:
+        log.error("PDF→Bilder fehlgeschlagen: %s", e)
+        return []
+
+
 async def _call_gpt_extract(content_text: str | None, image_b64: str | None,
                              image_mime: str | None, exclude_identity: dict,
                              available_fields: list[str],
@@ -431,7 +601,15 @@ async def _call_gpt_extract(content_text: str | None, image_b64: str | None,
         exclude_parts.append("Firma: " + exclude_identity["company_name"])
     exclude_note = ("AUSSCHLIESSEN (das ist der Trainer selbst): " + " | ".join(exclude_parts)) if exclude_parts else ""
 
-    fields_note = ("Verfügbare Custom-Felder des Trainers: " + ", ".join(available_fields)) if available_fields else ""
+    # System-Felder rausfiltern, nur echte Custom Fields des Trainers anzeigen
+    system_fields = {"first_name", "last_name", "full_name", "email", "phone",
+                     "date_of_birth", "organization_name", "organization_role",
+                     "status", "notes", "doi_confirmed_at", "_ignore"}
+    custom_only = [f for f in available_fields if f not in system_fields]
+    if custom_only:
+        fields_note = "Bereits vorhandene Custom-Felder des Trainers (verwende EXAKT diese Namen wenn passend): " + ", ".join(custom_only)
+    else:
+        fields_note = ""
 
     user_content: list = []
 
@@ -538,8 +716,10 @@ async def extract_contacts(payload: ExtractContactsRequest, request: Request):
     """
     GPT-4o extrahiert Kontakte + Organisationen aus beliebigen Dateien.
     CSV/Excel: chunked rows (50 Zeilen je Chunk), parallel (max 5).
-    PDF: Text-Extraktion dann chunked parallel.
-    Bilder (JPG/PNG/WebP): direkt GPT-4o Vision.
+    PDF: Text-Extraktion → GPT, Vision-Fallback bei 0 Kontakten.
+    Bilder (JPG/PNG/WebP/TIF/BMP): direkt GPT-4o Vision.
+    Dokumente (DOCX/RTF/ODT/EML): Text-Extraktion → GPT.
+    vCard (VCF): mechanisches Parsing ohne GPT.
     """
     content_bytes = base64.b64decode(payload.file_content_base64)
     ft = payload.file_type.lower().lstrip(".")
@@ -551,7 +731,8 @@ async def extract_contacts(payload: ExtractContactsRequest, request: Request):
     try:
         # ── Bilder → GPT Vision ────────────────────────────────────────────
         IMAGE_TYPES = {"jpg": "image/jpeg", "jpeg": "image/jpeg",
-                       "png": "image/png", "webp": "image/webp", "heic": "image/heic"}
+                       "png": "image/png", "webp": "image/webp", "heic": "image/heic",
+                       "tif": "image/tiff", "tiff": "image/tiff", "bmp": "image/bmp"}
         if ft in IMAGE_TYPES:
             result = await _extract_chunk(
                 content_text=None,
@@ -565,45 +746,123 @@ async def extract_contacts(payload: ExtractContactsRequest, request: Request):
             if result.get("chunk_notes"):
                 all_notes.append(result["chunk_notes"])
 
-        # ── PDF → Text → chunked parallel ──────────────────────────────────
+        # ── PDF → Text → chunked parallel → Vision-Fallback ────────────────
         elif ft == "pdf":
             pdf_text = _extract_pdf_text(content_bytes)
-            if not pdf_text.strip():
-                log.warning("extract-contacts [pdf] %s: pdfplumber lieferte keinen Text", payload.file_name)
-                return {"contacts": [], "organizations": [], "notes": "PDF enthielt keinen lesbaren Text."}
 
-            log.info("extract-contacts [pdf] %s: %d Zeichen Text extrahiert. Erste 500 Zeichen:\n%s",
-                     payload.file_name, len(pdf_text), pdf_text[:500])
+            if pdf_text.strip():
+                log.info("extract-contacts [pdf] %s: %d Zeichen Text extrahiert. Erste 500 Zeichen:\n%s",
+                         payload.file_name, len(pdf_text), pdf_text[:500])
 
-            chunk_size = 6000
-            text_chunks = [pdf_text[i:i+chunk_size] for i in range(0, len(pdf_text), chunk_size)]
-            total = len(text_chunks)
+                chunk_size = 6000
+                text_chunks = [pdf_text[i:i+chunk_size] for i in range(0, len(pdf_text), chunk_size)]
+                total = len(text_chunks)
 
-            # Alle PDF-Chunks parallel
-            tasks = [
-                _extract_chunk(
-                    content_text=chunk, image_b64=None, image_mime=None,
-                    exclude_identity=payload.exclude_identity,
-                    available_fields=payload.available_fields,
-                    label=f"pdf-chunk-{i+1}/{total}", file_name=payload.file_name,
-                )
-                for i, chunk in enumerate(text_chunks)
-            ]
-            results = await asyncio.gather(*tasks)
-            c, o, n = _collect_results(results)
-            all_contacts.extend(c)
-            all_orgs.extend(o)
-            all_notes.extend(n)
+                # Alle PDF-Chunks parallel
+                tasks = [
+                    _extract_chunk(
+                        content_text=chunk, image_b64=None, image_mime=None,
+                        exclude_identity=payload.exclude_identity,
+                        available_fields=payload.available_fields,
+                        label=f"pdf-chunk-{i+1}/{total}", file_name=payload.file_name,
+                    )
+                    for i, chunk in enumerate(text_chunks)
+                ]
+                results = await asyncio.gather(*tasks)
+                c, o, n = _collect_results(results)
+                all_contacts.extend(c)
+                all_orgs.extend(o)
+                all_notes.extend(n)
+
+            # Vision-Fallback: wenn Text-Extraktion 0 Kontakte liefert oder kein Text vorhanden
+            if not all_contacts:
+                log.info("extract-contacts [pdf-vision-fallback] %s: Text lieferte 0 Kontakte, versuche Vision…",
+                         payload.file_name)
+                page_images = _pdf_pages_to_images(content_bytes)
+                if page_images:
+                    vision_tasks = [
+                        _extract_chunk(
+                            content_text=None,
+                            image_b64=img_b64, image_mime="image/png",
+                            exclude_identity=payload.exclude_identity,
+                            available_fields=payload.available_fields,
+                            label=f"pdf-vision-{i+1}/{len(page_images)}",
+                            file_name=payload.file_name,
+                        )
+                        for i, img_b64 in enumerate(page_images)
+                    ]
+                    vision_results = await asyncio.gather(*vision_tasks)
+                    vc, vo, vn = _collect_results(vision_results)
+                    if vc:
+                        log.info("extract-contacts [pdf-vision-fallback] %s: Vision fand %d Kontakte!",
+                                 payload.file_name, len(vc))
+                        # Vision-Ergebnisse ersetzen die leeren Text-Ergebnisse
+                        all_contacts = vc
+                        all_orgs = vo
+                        all_notes = [f"[Vision-Fallback] {n}" for n in vn]
+                    else:
+                        log.warning("extract-contacts [pdf-vision-fallback] %s: Auch Vision fand 0 Kontakte",
+                                    payload.file_name)
+                else:
+                    log.warning("extract-contacts [pdf] %s: Vision-Fallback nicht möglich (keine Bilder)",
+                                payload.file_name)
+                    if not pdf_text.strip():
+                        all_notes.append("PDF enthielt keinen lesbaren Text und Vision-Fallback war nicht verfügbar.")
+
+        # ── vCard → mechanisches Parsing (kein GPT nötig) ──────────────────
+        elif ft == "vcf":
+            vcf_contacts = _parse_vcf(content_bytes)
+            all_contacts.extend(vcf_contacts)
+            if vcf_contacts:
+                # Organisationen aus vCard-Kontakten sammeln
+                seen_orgs = set()
+                for c in vcf_contacts:
+                    org_name = c.pop("organization", None)
+                    if org_name and org_name not in seen_orgs:
+                        seen_orgs.add(org_name)
+                        all_orgs.append({"name": org_name})
+                all_notes.append(f"{len(vcf_contacts)} Kontakte aus vCard importiert.")
+            else:
+                all_notes.append("vCard-Datei enthielt keine auswertbaren Kontakte.")
+
+        # ── Dokumente (DOCX, RTF, ODT, EML) → Text → GPT ─────────────────
+        elif ft in ("docx", "rtf", "odt", "eml"):
+            extractors = {
+                "docx": _extract_docx_text,
+                "rtf":  _extract_rtf_text,
+                "odt":  _extract_odt_text,
+                "eml":  _extract_eml_text,
+            }
+            doc_text = extractors[ft](content_bytes)
+            if not doc_text.strip():
+                all_notes.append(f"{ft.upper()}-Datei enthielt keinen lesbaren Text.")
+            else:
+                log.info("extract-contacts [%s] %s: %d Zeichen Text extrahiert",
+                         ft, payload.file_name, len(doc_text))
+
+                chunk_size = 6000
+                text_chunks = [doc_text[i:i+chunk_size] for i in range(0, len(doc_text), chunk_size)]
+                total = len(text_chunks)
+
+                tasks = [
+                    _extract_chunk(
+                        content_text=chunk, image_b64=None, image_mime=None,
+                        exclude_identity=payload.exclude_identity,
+                        available_fields=payload.available_fields,
+                        label=f"{ft}-chunk-{i+1}/{total}", file_name=payload.file_name,
+                    )
+                    for i, chunk in enumerate(text_chunks)
+                ]
+                results = await asyncio.gather(*tasks)
+                c, o, n = _collect_results(results)
+                all_contacts.extend(c)
+                all_orgs.extend(o)
+                all_notes.extend(n)
 
         # ── CSV / Excel / ODS → Zeilen → chunked parallel ─────────────────
-        else:
-            if ft in ("csv", "txt", "tsv"):
-                sheet = parse_csv_bytes(content_bytes)
-                sheets = [sheet]
-            elif ft in ("xlsx", "xls", "ods", "xlsm"):
-                sheets = parse_excel_bytes(content_bytes)
-            else:
-                raise HTTPException(415, f"Nicht unterstütztes Format: {ft}")
+        elif ft in ("csv", "txt", "tsv"):
+            sheet = parse_csv_bytes(content_bytes)
+            sheets = [sheet]
 
             for sheet in sheets:
                 rows = sheet.get("rows", [])
@@ -614,7 +873,6 @@ async def extract_contacts(payload: ExtractContactsRequest, request: Request):
                 chunk_size = 50
                 total_chunks = (len(all_rows) + chunk_size - 1) // chunk_size
 
-                # Alle Chunks dieser Sheet parallel
                 tasks = []
                 for chunk_start in range(0, len(all_rows), chunk_size):
                     chunk_idx = chunk_start // chunk_size + 1
@@ -634,6 +892,41 @@ async def extract_contacts(payload: ExtractContactsRequest, request: Request):
                 all_orgs.extend(o)
                 for note in n:
                     all_notes.append(f"[{sheet_name}] {note}")
+
+        elif ft in ("xlsx", "xls", "ods", "xlsm"):
+            sheets = parse_excel_bytes(content_bytes)
+
+            for sheet in sheets:
+                rows = sheet.get("rows", [])
+                headers = sheet.get("headers", [])
+                sheet_name = sheet.get("name", "")
+
+                all_rows = [headers] + rows if headers else rows
+                chunk_size = 50
+                total_chunks = (len(all_rows) + chunk_size - 1) // chunk_size
+
+                tasks = []
+                for chunk_start in range(0, len(all_rows), chunk_size):
+                    chunk_idx = chunk_start // chunk_size + 1
+                    chunk = all_rows[chunk_start:chunk_start + chunk_size]
+                    text = f"Sheet: {sheet_name}\n" + _rows_to_text_table(chunk)
+                    tasks.append(_extract_chunk(
+                        content_text=text, image_b64=None, image_mime=None,
+                        exclude_identity=payload.exclude_identity,
+                        available_fields=payload.available_fields,
+                        label=f"{sheet_name}-chunk-{chunk_idx}/{total_chunks}",
+                        file_name=payload.file_name,
+                    ))
+
+                results = await asyncio.gather(*tasks)
+                c, o, n = _collect_results(results)
+                all_contacts.extend(c)
+                all_orgs.extend(o)
+                for note in n:
+                    all_notes.append(f"[{sheet_name}] {note}")
+
+        else:
+            raise HTTPException(415, f"Nicht unterstütztes Format: {ft}")
 
     except json.JSONDecodeError as e:
         log.error("extract-contacts: Ungültiges JSON von GPT: %s", e)
