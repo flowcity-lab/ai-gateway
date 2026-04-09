@@ -40,9 +40,17 @@ class NormalizePhoneRequest(BaseModel):
     candidate_countries: list[str] = []
 
 class AnalyzeColumnsRequest(BaseModel):
-    headers: list[str]                          # Spaltennamen aus Zeile 1 (können Datenwerte sein wenn kein Header)
-    sample_rows: list[list[str]]                # 5-10 Beispielzeilen
-    existing_custom_field_names: list[str] = [] # bereits vorhandene eigene Felder (nicht doppelt vorschlagen)
+    headers: list[str]
+    sample_rows: list[list[str]]
+    existing_custom_field_names: list[str] = []
+
+class ExtractContactsRequest(BaseModel):
+    file_content_base64: str
+    file_name: str
+    file_type: str                              # csv, xlsx, xls, ods, pdf, jpg, png, webp, heic
+    exclude_identity: dict = {}                 # Trainer-eigene Daten: names, emails, phones, company_name
+    available_fields: list[str] = []            # System + Custom Fields die der Trainer hat
+    chunk_index: int = 0                        # Intern für chunked processing
 
 # ── Bekannte Export-Formate (Auto-Erkennung via Header-Patterns) ─────────────
 
@@ -329,6 +337,221 @@ async def analyze_columns(payload: AnalyzeColumnsRequest, request: Request):
         "custom_field_suggestions": result.get("custom_field_suggestions", []),
         "notes":                    result.get("notes", ""),
         "model_used":               _ANALYZE_MODEL,
+    }
+
+
+_EXTRACT_SYSTEM_PROMPT = """
+Du extrahierst Kontaktdaten aus beliebigen Dokumenten für einen Trainer/Coach.
+
+Regeln:
+1. Suche nach PERSONEN und ORGANISATIONEN — ignoriere KPIs, Summen, Metadaten, Diagramme, leere Zeilen, interne IDs, Zeilennummern.
+2. Erkenne Beziehungen: welche Person gehört zu welcher Organisation?
+3. SCHLIESSE AUS: Personen/Firmen die in exclude_identity stehen (das ist der Trainer selbst).
+4. Bei Rechnungen: die Absender-Seite ist meist der Trainer (ausschließen), die Empfänger-Seite ist der Kunde (extrahieren).
+5. Wenn ein Name Titel enthält (Mag., Dr., DI, Prof.) → in full_name übernehmen.
+6. Gib nur echte Kontaktdaten zurück — keine Platzhalter, keine Beispieldaten.
+7. confidence: 0.0-1.0 (wie sicher bist du dass das ein echter Kontakt ist)
+
+Antworte ausschließlich mit validem JSON:
+{
+  "contacts": [
+    {
+      "first_name": "Stefan",
+      "last_name": "Holzer",
+      "full_name": null,
+      "email": "stefan@example.at",
+      "phone": "+43 664 123 45 67",
+      "organization_name": "Ärztekammer Vorarlberg",
+      "organization_role": null,
+      "date_of_birth": null,
+      "notes": null,
+      "custom_fields": {},
+      "confidence": 0.95,
+      "source_hint": "Zeile 5"
+    }
+  ],
+  "organizations": [
+    {
+      "name": "Ärztekammer Vorarlberg",
+      "website": null,
+      "address": "Schulgasse 17, 6850 Dornbirn"
+    }
+  ],
+  "chunk_notes": "200 Zeilen verarbeitet, 45 Kontakte gefunden, 12 Zeilen waren KPI-Daten"
+}
+""".strip()
+
+
+def _rows_to_text_table(rows: list[list]) -> str:
+    """Konvertiert Zeilen in lesbaren Text für GPT."""
+    lines = []
+    for i, row in enumerate(rows):
+        cells = [str(c).strip() if c is not None else "" for c in row]
+        # Leere Zeilen überspringen
+        if not any(cells):
+            continue
+        lines.append(f"Zeile {i+1}: " + " | ".join(cells))
+    return "\n".join(lines)
+
+
+def _extract_pdf_text(content_bytes: bytes) -> str:
+    """Extrahiert Text aus PDF via pdfplumber."""
+    try:
+        import pdfplumber
+        import io as _io
+        with pdfplumber.open(_io.BytesIO(content_bytes)) as pdf:
+            pages = []
+            for page in pdf.pages:
+                text = page.extract_text()
+                if text:
+                    pages.append(text)
+            return "\n\n--- Seite ---\n\n".join(pages)
+    except Exception as e:
+        log.warning("PDF-Extraktion fehlgeschlagen: %s", e)
+        return ""
+
+
+async def _call_gpt_extract(content_text: str | None, image_b64: str | None,
+                             image_mime: str | None, exclude_identity: dict,
+                             available_fields: list[str]) -> dict:
+    """Ruft GPT-4o zur Kontakt-Extraktion auf. Entweder Text oder Bild."""
+
+    # Exclude-Hinweis aufbauen
+    exclude_parts = []
+    if exclude_identity.get("names"):
+        exclude_parts.append("Namen: " + ", ".join(exclude_identity["names"]))
+    if exclude_identity.get("emails"):
+        exclude_parts.append("E-Mails: " + ", ".join(exclude_identity["emails"]))
+    if exclude_identity.get("company_name"):
+        exclude_parts.append("Firma: " + exclude_identity["company_name"])
+    exclude_note = ("AUSSCHLIESSEN (das ist der Trainer selbst): " + " | ".join(exclude_parts)) if exclude_parts else ""
+
+    fields_note = ("Verfügbare Custom-Felder des Trainers: " + ", ".join(available_fields)) if available_fields else ""
+
+    user_content: list = []
+
+    if image_b64 and image_mime:
+        user_content.append({
+            "type": "text",
+            "text": f"Extrahiere alle Kontakte aus diesem Dokument/Bild.\n{exclude_note}\n{fields_note}"
+        })
+        user_content.append({
+            "type": "image_url",
+            "image_url": {"url": f"data:{image_mime};base64,{image_b64}", "detail": "high"}
+        })
+    else:
+        user_content.append({
+            "type": "text",
+            "text": f"{exclude_note}\n{fields_note}\n\nInhalt:\n{content_text}"
+        })
+
+    response = _oai.chat.completions.create(
+        model="gpt-4o",
+        messages=[
+            {"role": "system", "content": _EXTRACT_SYSTEM_PROMPT},
+            {"role": "user",   "content": user_content},
+        ],
+        response_format={"type": "json_object"},
+        temperature=0.1,
+        max_tokens=4000,
+    )
+    raw = response.choices[0].message.content or "{}"
+    return json.loads(raw)
+
+
+@router.post("/import/extract-contacts")
+async def extract_contacts(payload: ExtractContactsRequest, request: Request):
+    """
+    GPT-4o extrahiert Kontakte + Organisationen aus beliebigen Dateien.
+    CSV/Excel: chunked rows (200 Zeilen je Chunk).
+    PDF: Text-Extraktion dann chunked.
+    Bilder (JPG/PNG/WebP): direkt GPT-4o Vision.
+    """
+    content_bytes = base64.b64decode(payload.file_content_base64)
+    ft = payload.file_type.lower().lstrip(".")
+
+    all_contacts: list[dict] = []
+    all_orgs: list[dict] = []
+    all_notes: list[str] = []
+
+    try:
+        # ── Bilder → GPT Vision ────────────────────────────────────────────
+        IMAGE_TYPES = {"jpg": "image/jpeg", "jpeg": "image/jpeg",
+                       "png": "image/png", "webp": "image/webp", "heic": "image/heic"}
+        if ft in IMAGE_TYPES:
+            result = await _call_gpt_extract(
+                content_text=None,
+                image_b64=payload.file_content_base64,
+                image_mime=IMAGE_TYPES[ft],
+                exclude_identity=payload.exclude_identity,
+                available_fields=payload.available_fields,
+            )
+            all_contacts.extend(result.get("contacts", []))
+            all_orgs.extend(result.get("organizations", []))
+            if result.get("chunk_notes"):
+                all_notes.append(result["chunk_notes"])
+
+        # ── PDF → Text → chunked ───────────────────────────────────────────
+        elif ft == "pdf":
+            pdf_text = _extract_pdf_text(content_bytes)
+            if not pdf_text.strip():
+                return {"contacts": [], "organizations": [], "notes": "PDF enthielt keinen lesbaren Text."}
+            # In Blöcke von ~6000 Zeichen aufteilen (ca. 1500 Tokens)
+            chunk_size = 6000
+            chunks = [pdf_text[i:i+chunk_size] for i in range(0, len(pdf_text), chunk_size)]
+            for chunk in chunks:
+                result = await _call_gpt_extract(
+                    content_text=chunk,
+                    image_b64=None, image_mime=None,
+                    exclude_identity=payload.exclude_identity,
+                    available_fields=payload.available_fields,
+                )
+                all_contacts.extend(result.get("contacts", []))
+                all_orgs.extend(result.get("organizations", []))
+                if result.get("chunk_notes"):
+                    all_notes.append(result["chunk_notes"])
+
+        # ── CSV / Excel / ODS → Zeilen → chunked ──────────────────────────
+        else:
+            # Datei parsen (bestehende Logik wiederverwenden)
+            parse_result = _parse_file(content_bytes, payload.file_name, ft)
+            sheets = parse_result.get("sheets", [])
+
+            for sheet in sheets:
+                rows = sheet.get("rows", [])
+                headers = sheet.get("headers", [])
+                sheet_name = sheet.get("name", "")
+
+                # Alle Zeilen inkl. Header als Text-Tabelle, in 200er-Chunks
+                all_rows = [headers] + rows if headers else rows
+                chunk_size = 200
+
+                for chunk_start in range(0, len(all_rows), chunk_size):
+                    chunk = all_rows[chunk_start:chunk_start + chunk_size]
+                    text = f"Sheet: {sheet_name}\n" + _rows_to_text_table(chunk)
+                    result = await _call_gpt_extract(
+                        content_text=text,
+                        image_b64=None, image_mime=None,
+                        exclude_identity=payload.exclude_identity,
+                        available_fields=payload.available_fields,
+                    )
+                    all_contacts.extend(result.get("contacts", []))
+                    all_orgs.extend(result.get("organizations", []))
+                    if result.get("chunk_notes"):
+                        all_notes.append(f"[{sheet_name}] {result['chunk_notes']}")
+
+    except json.JSONDecodeError as e:
+        log.error("extract-contacts: Ungültiges JSON von GPT: %s", e)
+        raise HTTPException(500, "GPT hat kein valides JSON zurückgegeben")
+    except Exception as e:
+        log.error("extract-contacts: Fehler: %s", e, exc_info=True)
+        raise HTTPException(500, f"Extraktion fehlgeschlagen: {str(e)}")
+
+    return {
+        "contacts":      all_contacts,
+        "organizations": all_orgs,
+        "notes":         " | ".join(all_notes),
+        "total_found":   len(all_contacts),
     }
 
 
