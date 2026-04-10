@@ -22,7 +22,7 @@ from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from import_parser import router as import_parser_router
+from import_parser import router as import_parser_router, _cleanup_loop as import_cleanup_loop
 
 # ── Konfiguration (Umgebungsvariablen) ────────────────────────────────
 
@@ -73,7 +73,17 @@ async def lifespan(app: FastAPI):
     global oai_client
     oai_client = get_openai_client()
     log.info("AI-Gateway ready. OpenAI key=%s", "set" if OPENAI_API_KEY else "MISSING")
+
+    # Background-Cleanup für Import-Tasks (TTL 2h, Intervall 15 Min)
+    cleanup_task = asyncio.create_task(import_cleanup_loop())
+
     yield
+
+    cleanup_task.cancel()
+    try:
+        await cleanup_task
+    except asyncio.CancelledError:
+        pass
 
 
 app = FastAPI(title="AI-Gateway", lifespan=lifespan)

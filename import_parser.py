@@ -35,9 +35,29 @@ _ANALYZE_MODEL = os.environ.get("IMPORT_ANALYZE_MODEL", "gpt-4o-mini")  # mini r
 # Gateway-Secret für Callbacks (gleiche Variable wie main.py)
 _GATEWAY_SECRET = os.environ.get("AI_GATEWAY_SECRET", "")
 
-# In-Memory Task-Store für async Extraktion (TTL: 2h, Cleanup bei GET)
+# In-Memory Task-Store für async Extraktion (TTL: 2h, aktiver Cleanup alle 15 Min via Background-Loop)
 # { task_id: {"status": "processing"|"complete"|"failed", "result": dict|None, "error": str|None, "created_at": float} }
 _import_tasks: dict = {}
+
+_TASK_TTL_SECONDS  = 7200   # 2 Stunden — Tasks werden danach gelöscht
+_CLEANUP_INTERVAL  = 900    # 15 Minuten — Cleanup-Frequenz
+
+
+async def _cleanup_loop():
+    """
+    Background-Loop: Entfernt abgelaufene Import-Tasks alle 15 Minuten.
+    Läuft unabhängig vom Polling — auch wenn niemand /import/status aufruft.
+    Wird vom Lifespan in main.py als asyncio.Task gestartet.
+    """
+    while True:
+        await asyncio.sleep(_CLEANUP_INTERVAL)
+        now = time.time()
+        expired = [tid for tid, t in list(_import_tasks.items())
+                   if now - t.get("created_at", now) > _TASK_TTL_SECONDS]
+        if expired:
+            for tid in expired:
+                _import_tasks.pop(tid, None)
+            log.info("Import-Cleanup: %d abgelaufene Tasks entfernt (%d verbleiben)", len(expired), len(_import_tasks))
 
 # ── Pydantic Models ───────────────────────────────────────────────────────────
 
@@ -1182,14 +1202,8 @@ async def get_import_status(task_id: str, request: Request):
     """
     Polling-Fallback für lokale Dev-Umgebungen wo Callbacks nicht funktionieren.
     Gibt Extraktion-Status + Ergebnis zurück sobald fertig.
-    Cleanup: Tasks älter als 2h werden entfernt.
+    Cleanup läuft aktiv alle 15 Min via _cleanup_loop() — hier nicht mehr nötig.
     """
-    # Cleanup alter Tasks (>2h)
-    now = time.time()
-    expired = [tid for tid, t in _import_tasks.items() if now - t.get("created_at", now) > 7200]
-    for tid in expired:
-        _import_tasks.pop(tid, None)
-
     task = _import_tasks.get(task_id)
     if not task:
         raise HTTPException(404, f"Task '{task_id}' nicht gefunden (abgelaufen oder ungültig)")
