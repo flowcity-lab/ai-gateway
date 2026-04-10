@@ -53,6 +53,8 @@ class ExtractContactsRequest(BaseModel):
     exclude_identity: dict = {}                 # Trainer-eigene Daten: names, emails, phones, company_name
     available_fields: list[str] = []            # System + Custom Fields die der Trainer hat
     chunk_index: int = 0                        # Intern für chunked processing
+    model: str = "gpt-4.1"                     # Text-Extraktion: konfigurierbar über AI-Config
+    vision_model: str = "gpt-4.1"             # Vision/Bild-Extraktion: konfigurierbar über AI-Config
 
 # ── Bekannte Export-Formate (Auto-Erkennung via Header-Patterns) ─────────────
 
@@ -590,11 +592,12 @@ def _pdf_pages_to_images(content_bytes: bytes, dpi: int = 150) -> list[str]:
 async def _call_gpt_extract(content_text: str | None, image_b64: str | None,
                              image_mime: str | None, exclude_identity: dict,
                              available_fields: list[str],
+                             model: str = "gpt-4.1",
                              _max_tokens: int = 16000,
                              _attempt: int = 1,
                              _prev_tokens_in: int = 0,
                              _prev_tokens_out: int = 0) -> dict:
-    """Ruft GPT-4o zur Kontakt-Extraktion auf. Entweder Text oder Bild.
+    """Ruft GPT zur Kontakt-Extraktion auf. Entweder Text oder Bild.
     Bei Truncation (finish_reason=='length') wird automatisch mit höherem
     Token-Limit erneut versucht (max 2 Versuche)."""
 
@@ -636,7 +639,7 @@ async def _call_gpt_extract(content_text: str | None, image_b64: str | None,
         })
 
     response = _oai.chat.completions.create(
-        model="gpt-4o",
+        model=model,
         messages=[
             {"role": "system", "content": _EXTRACT_SYSTEM_PROMPT},
             {"role": "user",   "content": user_content},
@@ -663,6 +666,7 @@ async def _call_gpt_extract(content_text: str | None, image_b64: str | None,
                 content_text=content_text, image_b64=image_b64,
                 image_mime=image_mime, exclude_identity=exclude_identity,
                 available_fields=available_fields,
+                model=model,
                 _max_tokens=min(_max_tokens * 2, 16384),
                 _attempt=_attempt + 1,
                 _prev_tokens_in=_prev_tokens_in + this_tokens_in,
@@ -705,7 +709,7 @@ def _log_gpt_result(result: dict, source: str, file_name: str) -> None:
 async def _extract_chunk(content_text: str | None, image_b64: str | None,
                           image_mime: str | None, exclude_identity: dict,
                           available_fields: list[str], label: str,
-                          file_name: str) -> dict:
+                          file_name: str, model: str = "gpt-4.1") -> dict:
     """Einen Chunk mit Semaphore-Schutz extrahieren."""
     async with _gpt_semaphore:
         result = await _call_gpt_extract(
@@ -713,6 +717,7 @@ async def _extract_chunk(content_text: str | None, image_b64: str | None,
             image_b64=image_b64, image_mime=image_mime,
             exclude_identity=exclude_identity,
             available_fields=available_fields,
+            model=model,
         )
         _log_gpt_result(result, label, file_name)
         return result
@@ -750,6 +755,8 @@ async def extract_contacts(payload: ExtractContactsRequest, request: Request):
     all_notes: list[str] = []
     all_tokens_in:  int = 0
     all_tokens_out: int = 0
+    vision_tokens_in:  int = 0
+    vision_tokens_out: int = 0
 
     try:
         # ── Bilder → GPT Vision ────────────────────────────────────────────
@@ -763,13 +770,14 @@ async def extract_contacts(payload: ExtractContactsRequest, request: Request):
                 exclude_identity=payload.exclude_identity,
                 available_fields=payload.available_fields,
                 label="vision", file_name=payload.file_name,
+                model=payload.vision_model,
             )
             all_contacts.extend(result.get("contacts", []))
             all_orgs.extend(result.get("organizations", []))
             if result.get("chunk_notes"):
                 all_notes.append(result["chunk_notes"])
-            all_tokens_in  += result.get("_tokens_in",  0)
-            all_tokens_out += result.get("_tokens_out", 0)
+            vision_tokens_in  += result.get("_tokens_in",  0)
+            vision_tokens_out += result.get("_tokens_out", 0)
 
         # ── PDF → Text → chunked parallel → Vision-Fallback ────────────────
         elif ft == "pdf":
@@ -783,13 +791,14 @@ async def extract_contacts(payload: ExtractContactsRequest, request: Request):
                 text_chunks = [pdf_text[i:i+chunk_size] for i in range(0, len(pdf_text), chunk_size)]
                 total = len(text_chunks)
 
-                # Alle PDF-Chunks parallel
+                # Alle PDF-Chunks parallel mit Text-Modell
                 tasks = [
                     _extract_chunk(
                         content_text=chunk, image_b64=None, image_mime=None,
                         exclude_identity=payload.exclude_identity,
                         available_fields=payload.available_fields,
                         label=f"pdf-chunk-{i+1}/{total}", file_name=payload.file_name,
+                        model=payload.model,
                     )
                     for i, chunk in enumerate(text_chunks)
                 ]
@@ -815,13 +824,14 @@ async def extract_contacts(payload: ExtractContactsRequest, request: Request):
                             available_fields=payload.available_fields,
                             label=f"pdf-vision-{i+1}/{len(page_images)}",
                             file_name=payload.file_name,
+                            model=payload.vision_model,  # Vision-Modell!
                         )
                         for i, img_b64 in enumerate(page_images)
                     ]
                     vision_results = await asyncio.gather(*vision_tasks)
                     vc, vo, vn, vti, vto = _collect_results(vision_results)
-                    all_tokens_in  += vti
-                    all_tokens_out += vto
+                    vision_tokens_in  += vti
+                    vision_tokens_out += vto
                     if vc:
                         log.info("extract-contacts [pdf-vision-fallback] %s: Vision fand %d Kontakte!",
                                  payload.file_name, len(vc))
@@ -879,6 +889,7 @@ async def extract_contacts(payload: ExtractContactsRequest, request: Request):
                         exclude_identity=payload.exclude_identity,
                         available_fields=payload.available_fields,
                         label=f"{ft}-chunk-{i+1}/{total}", file_name=payload.file_name,
+                        model=payload.model,
                     )
                     for i, chunk in enumerate(text_chunks)
                 ]
@@ -915,6 +926,7 @@ async def extract_contacts(payload: ExtractContactsRequest, request: Request):
                         available_fields=payload.available_fields,
                         label=f"{sheet_name}-chunk-{chunk_idx}/{total_chunks}",
                         file_name=payload.file_name,
+                        model=payload.model,
                     ))
 
                 results = await asyncio.gather(*tasks)
@@ -949,6 +961,7 @@ async def extract_contacts(payload: ExtractContactsRequest, request: Request):
                         available_fields=payload.available_fields,
                         label=f"{sheet_name}-chunk-{chunk_idx}/{total_chunks}",
                         file_name=payload.file_name,
+                        model=payload.model,
                     ))
 
                 results = await asyncio.gather(*tasks)
@@ -970,16 +983,20 @@ async def extract_contacts(payload: ExtractContactsRequest, request: Request):
         log.error("extract-contacts: Fehler: %s", e, exc_info=True)
         raise HTTPException(500, f"Extraktion fehlgeschlagen: {str(e)}")
 
-    log.info("extract-contacts FERTIG [%s] %s: %d Kontakte, %d Orgs total, %d/%d Tokens",
-             ft, payload.file_name, len(all_contacts), len(all_orgs), all_tokens_in, all_tokens_out)
+    log.info("extract-contacts FERTIG [%s] %s: %d Kontakte, %d Orgs, text=%d/%d tokens, vision=%d/%d tokens",
+             ft, payload.file_name, len(all_contacts), len(all_orgs),
+             all_tokens_in, all_tokens_out, vision_tokens_in, vision_tokens_out)
 
     return {
-        "contacts":      all_contacts,
-        "organizations": all_orgs,
-        "notes":         " | ".join(all_notes),
-        "total_found":   len(all_contacts),
-        "tokens_input":  all_tokens_in,
-        "tokens_output": all_tokens_out,
+        "contacts":            all_contacts,
+        "organizations":       all_orgs,
+        "notes":               " | ".join(all_notes),
+        "total_found":         len(all_contacts),
+        "tokens_input":        all_tokens_in,
+        "tokens_output":       all_tokens_out,
+        "vision_tokens_input":  vision_tokens_in,
+        "vision_tokens_output": vision_tokens_out,
+        "vision_used":         vision_tokens_in > 0,
     }
 
 
