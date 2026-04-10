@@ -979,15 +979,34 @@ async def extract_contacts(payload: ExtractContactsRequest, request: Request):
         raise HTTPException(500, f"Extraktion fehlgeschlagen: {str(e)}")
 
 
+def _is_cancelled(task_id: str) -> bool:
+    """Prüft ob ein Task als cancelled markiert wurde."""
+    return _import_tasks.get(task_id, {}).get("status") == "cancelled"
+
+
 async def _extract_contacts_background(task_id: str, payload: ExtractContactsAsyncRequest):
     """
     Hintergrund-Coroutine für async Extraktion.
     Läuft unabhängig vom HTTP-Request — kein PHP-Timeout-Problem.
-    Speichert Ergebnis in _import_tasks und ruft optional Callback auf.
+    Prüft zwischen Sheet-Batches ob cancelled → bricht frühzeitig ab.
+    Partial Token Usage wird im Cancel-Callback mitgesendet.
     """
     try:
         content_bytes = base64.b64decode(payload.file_content_base64)
-        result = await _run_extraction(content_bytes, payload)
+
+        # Cancel-aware Extraktion für Excel (Sheet-weise Fortschritts-Tracking)
+        ft = payload.file_type.lower().lstrip(".")
+        if ft in ("xlsx", "xls", "ods", "xlsm", "csv", "txt", "tsv"):
+            result = await _run_extraction_cancellable(content_bytes, payload, task_id)
+        else:
+            # Bilder, PDF, DOCX etc. — kein sinnvoller Cancel-Punkt (1–wenige Calls)
+            result = await _run_extraction(content_bytes, payload)
+
+        # Prüfen ob zwischenzeitlich cancelled
+        if _is_cancelled(task_id):
+            log.info("import-async [%s] job=%d: Cancelled nach Extraktion — kein Callback",
+                     task_id[:8], payload.job_id)
+            return
 
         _import_tasks[task_id]["status"] = "complete"
         _import_tasks[task_id]["result"] = result
@@ -1021,23 +1040,106 @@ async def _extract_contacts_background(task_id: str, payload: ExtractContactsAsy
         _import_tasks[task_id]["status"] = "failed"
         _import_tasks[task_id]["error"] = str(e)
 
-        # Failure-Callback
+        # Failure-Callback — mit partial tokens (bei Cancel: bereits verbrauchte Kosten)
         fail_url = payload.callback_url
         if not fail_url and payload.laravel_base_url:
             fail_url = payload.laravel_base_url.rstrip("/") + "/api/ai/import/failed"
         elif fail_url:
             fail_url = fail_url.replace("/import/complete", "/import/failed")
 
+        # Partial tokens aus dem Task-Store holen (werden von _run_extraction_cancellable gesetzt)
+        partial = _import_tasks.get(task_id, {})
+        is_cancel = _import_tasks.get(task_id, {}).get("status") == "cancelled"
+
         if fail_url:
             try:
                 async with httpx.AsyncClient(timeout=15) as client:
                     await client.post(
                         fail_url,
-                        json={"job_id": payload.job_id, "task_id": task_id, "reason": str(e)},
+                        json={
+                            "job_id":        payload.job_id,
+                            "task_id":       task_id,
+                            "reason":        str(e),
+                            "cancelled":     is_cancel,
+                            "tokens_input":  partial.get("partial_tokens_in",  0),
+                            "tokens_output": partial.get("partial_tokens_out", 0),
+                        },
                         headers={"Authorization": f"Bearer {_GATEWAY_SECRET}"},
                     )
             except Exception:
                 pass
+
+
+async def _run_extraction_cancellable(
+    content_bytes: bytes,
+    payload: ExtractContactsAsyncRequest,
+    task_id: str,
+) -> dict:
+    """
+    Cancel-aware Variante von _run_extraction für CSV/Excel.
+    Prüft zwischen Sheet-Batches ob der Task cancelled wurde.
+    Gibt Partial-Result zurück wenn cancelled (mit bisher verbrauchten Tokens).
+    """
+    ft = payload.file_type.lower().lstrip(".")
+
+    all_contacts: list[dict] = []
+    all_orgs:     list[dict] = []
+    all_notes:    list[str]  = []
+    all_tokens_in:  int = 0
+    all_tokens_out: int = 0
+
+    if ft in ("csv", "txt", "tsv"):
+        sheets = [parse_csv_bytes(content_bytes)]
+    else:
+        sheets = parse_excel_bytes(content_bytes)
+        log.info("import-async [%s]: %d Sheets werden cancel-aware parallel verarbeitet",
+                 task_id[:8], len(sheets))
+
+    for i, sheet in enumerate(sheets):
+        # Cancel-Check VOR jedem Sheet-Batch
+        if _is_cancelled(task_id):
+            log.info("import-async [%s]: Cancelled vor Sheet %d/%d — sende partial tokens (in=%d, out=%d)",
+                     task_id[:8], i + 1, len(sheets), all_tokens_in, all_tokens_out)
+            # Partial tokens im Task-Store ablegen → Failure-Callback kann sie mitsenden
+            _import_tasks[task_id]["partial_tokens_in"]  = all_tokens_in
+            _import_tasks[task_id]["partial_tokens_out"] = all_tokens_out
+            raise asyncio.CancelledError("User hat Import abgebrochen")
+
+        c, o, n, ti, to = await _process_sheet_parallel(
+            sheet, payload.exclude_identity, payload.available_fields,
+            payload.file_name, payload.model,
+        )
+        all_contacts.extend(c); all_orgs.extend(o); all_notes.extend(n)
+        all_tokens_in += ti; all_tokens_out += to
+
+    return {
+        "contacts": all_contacts, "organizations": all_orgs,
+        "notes": " | ".join(all_notes), "total_found": len(all_contacts),
+        "tokens_input": all_tokens_in, "tokens_output": all_tokens_out,
+        "vision_tokens_input": 0, "vision_tokens_output": 0,
+        "vision_used": False, "cancelled": False,
+    }
+
+
+@router.delete("/import/cancel/{task_id}")
+async def cancel_import_task(task_id: str, request: Request):
+    """
+    Setzt den Task-Status auf 'cancelled'.
+    Die Hintergrund-Coroutine prüft diesen Flag zwischen Sheet-Batches
+    und bricht frühzeitig ab — bereits verbrauchte Tokens werden im
+    Failed-Callback gemeldet damit Laravel die Kosten trotzdem tracked.
+    """
+    task = _import_tasks.get(task_id)
+    if not task:
+        raise HTTPException(404, f"Task '{task_id}' nicht gefunden")
+
+    if task["status"] in ("complete", "failed"):
+        # Zu spät — Task ist bereits fertig
+        return {"status": task["status"], "message": "Task bereits abgeschlossen"}
+
+    log.info("import-async [%s] job=%s: Cancel-Request erhalten", task_id[:8], task.get("job_id"))
+    _import_tasks[task_id]["status"] = "cancelled"
+    return {"status": "cancelled", "task_id": task_id}
 
 
 @router.post("/import/extract-contacts-async")
@@ -1090,6 +1192,135 @@ async def get_import_status(task_id: str, request: Request):
         "result":    task.get("result"),       # None wenn noch in Bearbeitung
         "error":     task.get("error"),
     }
+
+
+class EstimateRequest(BaseModel):
+    file_content_base64: str
+    file_type: str
+    model: str = "gpt-4.1"
+    vision_model: str = "gpt-4.1"
+
+
+# Kosten-Tabelle für Schätzung ($ pro 1M Tokens) — muss mit ai_model_costs in DB übereinstimmen
+_MODEL_COSTS = {
+    "gpt-4.1":      {"input": 2.00, "output": 8.00},
+    "gpt-4.1-mini": {"input": 0.40, "output": 1.60},
+    "gpt-4.1-nano": {"input": 0.10, "output": 0.40},
+    "gpt-4o":       {"input": 2.50, "output": 10.00},
+    "gpt-4o-mini":  {"input": 0.15, "output":  0.60},
+}
+# Durchschnittliche Token-Werte pro Chunk (50 Zeilen Text-Extraktion)
+_AVG_TOKENS_IN_PER_CHUNK  = 2500
+_AVG_TOKENS_OUT_PER_CHUNK =  280
+# Durchschnitt pro Vision-Call (Bild oder PDF-Seite)
+_AVG_VISION_TOKENS_IN  = 1200
+_AVG_VISION_TOKENS_OUT =  260
+# Chars pro Text-Chunk (PDF, DOCX, etc.)
+_TEXT_CHUNK_SIZE = 6000
+
+
+def _estimate_cost_usd(chunks: int, model: str, vision_chunks: int = 0, vision_model: str = "gpt-4.1") -> float:
+    """Berechnet geschätzte Kosten basierend auf Chunk-Anzahl und Modell-Preisen."""
+    rates      = _MODEL_COSTS.get(model,        _MODEL_COSTS["gpt-4.1"])
+    v_rates    = _MODEL_COSTS.get(vision_model, _MODEL_COSTS["gpt-4.1"])
+    text_cost  = chunks        * (_AVG_TOKENS_IN_PER_CHUNK  / 1_000_000 * rates["input"]
+                                + _AVG_TOKENS_OUT_PER_CHUNK / 1_000_000 * rates["output"])
+    vision_cost = vision_chunks * (_AVG_VISION_TOKENS_IN  / 1_000_000 * v_rates["input"]
+                                 + _AVG_VISION_TOKENS_OUT / 1_000_000 * v_rates["output"])
+    return round(text_cost + vision_cost, 6)
+
+
+@router.post("/import/estimate")
+async def estimate_import_cost(payload: EstimateRequest, request: Request):
+    """
+    Kostenschätzung OHNE GPT-Calls — nur File-Parsing.
+    Aufgerufen von Laravel vor dem Job-Dispatch als Pre-Flight Budget-Check.
+
+    Rückgabe:
+      row_count, chunk_count, estimated_cost_usd, skipped_reason (wenn kein GPT nötig)
+    """
+    try:
+        content_bytes = base64.b64decode(payload.file_content_base64)
+    except Exception:
+        raise HTTPException(400, "Ungültige Base64-Daten")
+
+    ft = payload.file_type.lower().lstrip(".")
+
+    IMAGE_TYPES = {"jpg", "jpeg", "png", "webp", "heic", "tif", "tiff", "bmp"}
+
+    # ── Bilder → immer 1 Vision-Call (günstig & fix) ───────────────────────
+    if ft in IMAGE_TYPES:
+        cost = _estimate_cost_usd(0, payload.model, vision_chunks=1, vision_model=payload.vision_model)
+        return {"file_type": ft, "row_count": 0, "chunk_count": 0,
+                "vision_calls": 1, "estimated_cost_usd": cost, "skipped_reason": None}
+
+    # ── VCF → kein GPT nötig ───────────────────────────────────────────────
+    if ft == "vcf":
+        return {"file_type": ft, "row_count": 0, "chunk_count": 0,
+                "vision_calls": 0, "estimated_cost_usd": 0.0, "skipped_reason": "vcf_no_gpt"}
+
+    # ── Excel / ODS → alle Sheets parsen, Zeilen zählen ───────────────────
+    if ft in ("xlsx", "xls", "ods", "xlsm"):
+        try:
+            sheets = parse_excel_bytes(content_bytes)
+        except Exception as e:
+            raise HTTPException(422, f"Excel-Parsing fehlgeschlagen: {e}")
+        total_rows = sum(len(s.get("rows", [])) + (1 if s.get("headers") else 0) for s in sheets)
+        chunk_size = 50
+        chunks = sum(
+            max(1, (len(s.get("rows", [])) + (1 if s.get("headers") else 0) + chunk_size - 1) // chunk_size)
+            for s in sheets if s.get("has_data", True)
+        )
+        cost = _estimate_cost_usd(chunks, payload.model)
+        return {"file_type": ft, "row_count": total_rows, "chunk_count": chunks,
+                "sheet_count": len(sheets), "vision_calls": 0,
+                "estimated_cost_usd": cost, "skipped_reason": None}
+
+    # ── CSV / TXT / TSV → Zeilen zählen ────────────────────────────────────
+    if ft in ("csv", "txt", "tsv"):
+        try:
+            sheet = parse_csv_bytes(content_bytes)
+        except Exception as e:
+            raise HTTPException(422, f"CSV-Parsing fehlgeschlagen: {e}")
+        rows = len(sheet.get("rows", [])) + (1 if sheet.get("headers") else 0)
+        chunk_size = 50
+        chunks = max(1, (rows + chunk_size - 1) // chunk_size)
+        cost = _estimate_cost_usd(chunks, payload.model)
+        return {"file_type": ft, "row_count": rows, "chunk_count": chunks,
+                "vision_calls": 0, "estimated_cost_usd": cost, "skipped_reason": None}
+
+    # ── PDF / DOCX / RTF / ODT / EML → Zeichenanzahl schätzen ─────────────
+    if ft == "pdf":
+        try:
+            text = _extract_pdf_text(content_bytes)
+        except Exception:
+            text = ""
+        if text.strip():
+            chunks = max(1, (len(text) + _TEXT_CHUNK_SIZE - 1) // _TEXT_CHUNK_SIZE)
+            cost   = _estimate_cost_usd(chunks, payload.model)
+        else:
+            # Vision-Fallback: Seiten schätzen (100 KB ≈ 1 Seite als Heuristik)
+            est_pages = max(1, len(content_bytes) // 100_000)
+            cost = _estimate_cost_usd(0, payload.model, vision_chunks=est_pages,
+                                      vision_model=payload.vision_model)
+            chunks = 0
+        return {"file_type": ft, "row_count": 0, "chunk_count": chunks,
+                "vision_calls": 0 if text.strip() else est_pages,
+                "estimated_cost_usd": cost, "skipped_reason": None}
+
+    if ft in ("docx", "rtf", "odt", "eml"):
+        extractors = {"docx": _extract_docx_text, "rtf": _extract_rtf_text,
+                      "odt": _extract_odt_text,  "eml": _extract_eml_text}
+        try:
+            text = extractors[ft](content_bytes)
+        except Exception:
+            text = ""
+        chunks = max(1, (len(text) + _TEXT_CHUNK_SIZE - 1) // _TEXT_CHUNK_SIZE) if text.strip() else 1
+        cost   = _estimate_cost_usd(chunks, payload.model)
+        return {"file_type": ft, "row_count": 0, "chunk_count": chunks,
+                "vision_calls": 0, "estimated_cost_usd": cost, "skipped_reason": None}
+
+    raise HTTPException(415, f"Nicht unterstütztes Format für Schätzung: {ft}")
 
 
 def _normalize_single(raw: str, fallback: Optional[str], candidates: list[str], phonenumbers) -> dict:
