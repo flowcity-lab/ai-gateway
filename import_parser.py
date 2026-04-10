@@ -654,7 +654,10 @@ async def _call_gpt_extract(content_text: str | None, image_b64: str | None,
             "text": f"{exclude_note}\n{fields_note}\n\nInhalt:\n{content_text}"
         })
 
-    response = _oai.chat.completions.create(
+    # asyncio.to_thread(): blockierenden sync-Call in Thread-Pool auslagern.
+    # Gibt den Event Loop frei → asyncio.gather() läuft wirklich parallel.
+    response = await asyncio.to_thread(
+        _oai.chat.completions.create,
         model=model,
         messages=[
             {"role": "system", "content": _EXTRACT_SYSTEM_PROMPT},
@@ -705,8 +708,8 @@ async def _call_gpt_extract(content_text: str | None, image_b64: str | None,
     return data
 
 
-# Semaphore: max 5 parallele GPT-Calls (Rate-Limit-Schutz)
-_gpt_semaphore = asyncio.Semaphore(5)
+# Semaphore: max 10 parallele GPT-Calls (gpt-4.1 Tier 2+: 5.000 RPM — 10 reicht problemlos)
+_gpt_semaphore = asyncio.Semaphore(10)
 
 
 def _log_gpt_result(result: dict, source: str, file_name: str) -> None:
