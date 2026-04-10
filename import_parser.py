@@ -376,12 +376,21 @@ Regeln:
 6. Gib nur echte Kontaktdaten zurück — keine Platzhalter, keine Beispieldaten.
 7. confidence: 0.0-1.0 (wie sicher bist du dass das ein echter Kontakt ist)
 
+DOI (Double Opt-In / Einwilligung) — WICHTIG:
+8. Suche nach Spalten/Feldern die eine Marketing-Einwilligung oder Opt-In bestätigen:
+   - Typische Spaltennamen: "optin", "opt_in", "optin_date", "optin_time", "confirmed_at", "consent_date",
+     "einwilligung", "einwilligung_datum", "newsletter_anmeldung", "angemeldet_am", "double_opt_in",
+     "subscribed_at", "signup_date", "confirm_time", "double_optin", "DOI".
+   - Wenn ein Datum gefunden wird: in "doi_confirmed_at" als ISO-Datum (YYYY-MM-DD) eintragen.
+   - Wenn nur "Ja"/"Yes"/"true"/1 ohne Datum: "doi_confirmed_at": "today" (wird vom System auf heute gesetzt).
+   - Wenn "Nein"/"No"/"false"/0 oder leer: "doi_confirmed_at": null.
+
 CUSTOM FIELDS — WICHTIG:
-8. Die Standardfelder sind: first_name, last_name, email, phone, organization_name, organization_role, date_of_birth, notes.
-9. ALLE weiteren Informationen pro Kontakt gehören in "custom_fields" — z.B. Adresse, Stadt, PLZ, Land, Region, Branche, Beruf, Titel, Website, Kundennummer, Abteilung, Geschlecht, Sprache, etc.
-10. Wenn der Trainer bereits eigene Custom-Felder hat (werden im User-Prompt angegeben), verwende EXAKT deren Namen als Keys.
-11. Für neue Felder: verwende aussagekräftige, kurze deutsche Feldnamen als Keys (z.B. "Straße", "PLZ", "Stadt", "Land", "Branche", "Website").
-12. Adressfelder IMMER einzeln aufteilen: "Straße", "PLZ", "Stadt", "Land" — NICHT als ein zusammengesetztes Feld.
+9. Die Standardfelder sind: first_name, last_name, email, phone, organization_name, organization_role, date_of_birth, notes, doi_confirmed_at.
+10. ALLE weiteren Informationen pro Kontakt gehören in "custom_fields" — z.B. Adresse, Stadt, PLZ, Land, Region, Branche, Beruf, Titel, Website, Kundennummer, Abteilung, Geschlecht, Sprache, etc.
+11. Wenn der Trainer bereits eigene Custom-Felder hat (werden im User-Prompt angegeben), verwende EXAKT deren Namen als Keys.
+12. Für neue Felder: verwende aussagekräftige, kurze deutsche Feldnamen als Keys (z.B. "Straße", "PLZ", "Stadt", "Land", "Branche", "Website").
+13. Adressfelder IMMER einzeln aufteilen: "Straße", "PLZ", "Stadt", "Land" — NICHT als ein zusammengesetztes Feld.
 
 Antworte ausschließlich mit validem JSON:
 {
@@ -395,6 +404,7 @@ Antworte ausschließlich mit validem JSON:
       "organization_name": "Ärztekammer Vorarlberg",
       "organization_role": "Vorstandsmitglied",
       "date_of_birth": null,
+      "doi_confirmed_at": "2024-03-15",
       "notes": null,
       "custom_fields": {
         "Straße": "Schulgasse 17",
