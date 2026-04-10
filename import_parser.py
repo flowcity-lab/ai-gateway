@@ -15,10 +15,13 @@ import base64
 import logging
 import os
 import re
+import time
+import uuid
 from typing import Optional
 
 import chardet
-from fastapi import APIRouter, HTTPException, Request
+import httpx
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
 from pydantic import BaseModel
 from openai import OpenAI as _OpenAI
 
@@ -28,6 +31,13 @@ router = APIRouter()
 # Eigener OpenAI-Client (vermeidet circular import aus main.py)
 _oai = _OpenAI(api_key=os.environ.get("OPENAI_API_KEY", ""))
 _ANALYZE_MODEL = os.environ.get("IMPORT_ANALYZE_MODEL", "gpt-4o-mini")  # mini reicht hier vollständig
+
+# Gateway-Secret für Callbacks (gleiche Variable wie main.py)
+_GATEWAY_SECRET = os.environ.get("AI_GATEWAY_SECRET", "")
+
+# In-Memory Task-Store für async Extraktion (TTL: 2h, Cleanup bei GET)
+# { task_id: {"status": "processing"|"complete"|"failed", "result": dict|None, "error": str|None, "created_at": float} }
+_import_tasks: dict = {}
 
 # ── Pydantic Models ───────────────────────────────────────────────────────────
 
@@ -55,6 +65,12 @@ class ExtractContactsRequest(BaseModel):
     chunk_index: int = 0                        # Intern für chunked processing
     model: str = "gpt-4.1"                     # Text-Extraktion: konfigurierbar über AI-Config
     vision_model: str = "gpt-4.1"             # Vision/Bild-Extraktion: konfigurierbar über AI-Config
+
+class ExtractContactsAsyncRequest(ExtractContactsRequest):
+    """Async-Variante: Gateway verarbeitet im Hintergrund, Ergebnis via Callback."""
+    job_id: int                                 # AppJob.id — für Callback-Zuordnung
+    callback_url: str = ""                      # Laravel: POST /api/ai/import/complete
+    laravel_base_url: str = ""                  # Fallback: z.B. https://trainer.example.com
 
 # ── Bekannte Export-Formate (Auto-Erkennung via Header-Patterns) ─────────────
 
@@ -737,17 +753,49 @@ def _collect_results(results: list[dict]) -> tuple[list[dict], list[dict], list[
     return contacts, orgs, notes, tokens_in, tokens_out
 
 
-@router.post("/import/extract-contacts")
-async def extract_contacts(payload: ExtractContactsRequest, request: Request):
+async def _process_sheet_parallel(
+    sheet: dict,
+    exclude_identity: dict,
+    available_fields: list,
+    file_name: str,
+    model: str,
+) -> tuple[list, list, list, int, int]:
+    """Verarbeitet ein einzelnes Sheet (alle Chunks parallel). Wird von sync + async Endpoint genutzt."""
+    rows = sheet.get("rows", [])
+    headers = sheet.get("headers", [])
+    sheet_name = sheet.get("name", "")
+
+    all_rows = [headers] + rows if headers else rows
+    chunk_size = 50
+    total_chunks = (len(all_rows) + chunk_size - 1) // chunk_size
+
+    tasks = []
+    for chunk_start in range(0, len(all_rows), chunk_size):
+        chunk_idx = chunk_start // chunk_size + 1
+        chunk = all_rows[chunk_start:chunk_start + chunk_size]
+        text = f"Sheet: {sheet_name}\n" + _rows_to_text_table(chunk)
+        tasks.append(_extract_chunk(
+            content_text=text, image_b64=None, image_mime=None,
+            exclude_identity=exclude_identity,
+            available_fields=available_fields,
+            label=f"{sheet_name}-chunk-{chunk_idx}/{total_chunks}",
+            file_name=file_name,
+            model=model,
+        ))
+
+    results = await asyncio.gather(*tasks)
+    c, o, n, ti, to = _collect_results(list(results))
+    # Notes mit Sheet-Prefix
+    n = [f"[{sheet_name}] {note}" for note in n]
+    return c, o, n, ti, to
+
+
+async def _run_extraction(content_bytes: bytes, payload: ExtractContactsRequest) -> dict:
     """
-    GPT-4o extrahiert Kontakte + Organisationen aus beliebigen Dateien.
-    CSV/Excel: chunked rows (50 Zeilen je Chunk), parallel (max 5).
-    PDF: Text-Extraktion → GPT, Vision-Fallback bei 0 Kontakten.
-    Bilder (JPG/PNG/WebP/TIF/BMP): direkt GPT-4o Vision.
-    Dokumente (DOCX/RTF/ODT/EML): Text-Extraktion → GPT.
-    vCard (VCF): mechanisches Parsing ohne GPT.
+    Kernlogik der Kontaktextraktion — verwendbar von sync UND async Endpoint.
+    Gibt das fertige Result-Dict zurück (contacts, organizations, notes, tokens, ...).
+    Sheets werden PARALLEL verarbeitet (max 5 concurrent GPT-Calls via Semaphore).
     """
-    content_bytes = base64.b64decode(payload.file_content_base64)
     ft = payload.file_type.lower().lstrip(".")
 
     all_contacts: list[dict] = []
@@ -758,230 +806,141 @@ async def extract_contacts(payload: ExtractContactsRequest, request: Request):
     vision_tokens_in:  int = 0
     vision_tokens_out: int = 0
 
-    try:
-        # ── Bilder → GPT Vision ────────────────────────────────────────────
-        IMAGE_TYPES = {"jpg": "image/jpeg", "jpeg": "image/jpeg",
-                       "png": "image/png", "webp": "image/webp", "heic": "image/heic",
-                       "tif": "image/tiff", "tiff": "image/tiff", "bmp": "image/bmp"}
-        if ft in IMAGE_TYPES:
-            result = await _extract_chunk(
-                content_text=None,
-                image_b64=payload.file_content_base64, image_mime=IMAGE_TYPES[ft],
-                exclude_identity=payload.exclude_identity,
-                available_fields=payload.available_fields,
-                label="vision", file_name=payload.file_name,
-                model=payload.vision_model,
-            )
-            all_contacts.extend(result.get("contacts", []))
-            all_orgs.extend(result.get("organizations", []))
-            if result.get("chunk_notes"):
-                all_notes.append(result["chunk_notes"])
-            vision_tokens_in  += result.get("_tokens_in",  0)
-            vision_tokens_out += result.get("_tokens_out", 0)
+    # ── Bilder → GPT Vision ────────────────────────────────────────────
+    IMAGE_TYPES = {"jpg": "image/jpeg", "jpeg": "image/jpeg",
+                   "png": "image/png", "webp": "image/webp", "heic": "image/heic",
+                   "tif": "image/tiff", "tiff": "image/tiff", "bmp": "image/bmp"}
+    if ft in IMAGE_TYPES:
+        result = await _extract_chunk(
+            content_text=None,
+            image_b64=payload.file_content_base64, image_mime=IMAGE_TYPES[ft],
+            exclude_identity=payload.exclude_identity,
+            available_fields=payload.available_fields,
+            label="vision", file_name=payload.file_name,
+            model=payload.vision_model,
+        )
+        all_contacts.extend(result.get("contacts", []))
+        all_orgs.extend(result.get("organizations", []))
+        if result.get("chunk_notes"):
+            all_notes.append(result["chunk_notes"])
+        vision_tokens_in  += result.get("_tokens_in",  0)
+        vision_tokens_out += result.get("_tokens_out", 0)
 
-        # ── PDF → Text → chunked parallel → Vision-Fallback ────────────────
-        elif ft == "pdf":
-            pdf_text = _extract_pdf_text(content_bytes)
+    # ── PDF → Text → chunked parallel → Vision-Fallback ────────────────
+    elif ft == "pdf":
+        pdf_text = _extract_pdf_text(content_bytes)
+        if pdf_text.strip():
+            log.info("extract-contacts [pdf] %s: %d Zeichen Text extrahiert.", payload.file_name, len(pdf_text))
+            chunk_size = 6000
+            text_chunks = [pdf_text[i:i+chunk_size] for i in range(0, len(pdf_text), chunk_size)]
+            total = len(text_chunks)
+            tasks = [
+                _extract_chunk(
+                    content_text=chunk, image_b64=None, image_mime=None,
+                    exclude_identity=payload.exclude_identity,
+                    available_fields=payload.available_fields,
+                    label=f"pdf-chunk-{i+1}/{total}", file_name=payload.file_name,
+                    model=payload.model,
+                )
+                for i, chunk in enumerate(text_chunks)
+            ]
+            results = await asyncio.gather(*tasks)
+            c, o, n, ti, to = _collect_results(list(results))
+            all_contacts.extend(c); all_orgs.extend(o); all_notes.extend(n)
+            all_tokens_in += ti; all_tokens_out += to
 
-            if pdf_text.strip():
-                log.info("extract-contacts [pdf] %s: %d Zeichen Text extrahiert. Erste 500 Zeichen:\n%s",
-                         payload.file_name, len(pdf_text), pdf_text[:500])
-
-                chunk_size = 6000
-                text_chunks = [pdf_text[i:i+chunk_size] for i in range(0, len(pdf_text), chunk_size)]
-                total = len(text_chunks)
-
-                # Alle PDF-Chunks parallel mit Text-Modell
-                tasks = [
+        if not all_contacts:
+            log.info("extract-contacts [pdf-vision-fallback] %s: Text lieferte 0 Kontakte, versuche Vision…", payload.file_name)
+            page_images = _pdf_pages_to_images(content_bytes)
+            if page_images:
+                vision_tasks = [
                     _extract_chunk(
-                        content_text=chunk, image_b64=None, image_mime=None,
+                        content_text=None, image_b64=img_b64, image_mime="image/png",
                         exclude_identity=payload.exclude_identity,
                         available_fields=payload.available_fields,
-                        label=f"pdf-chunk-{i+1}/{total}", file_name=payload.file_name,
-                        model=payload.model,
+                        label=f"pdf-vision-{i+1}/{len(page_images)}",
+                        file_name=payload.file_name, model=payload.vision_model,
                     )
-                    for i, chunk in enumerate(text_chunks)
+                    for i, img_b64 in enumerate(page_images)
                 ]
-                results = await asyncio.gather(*tasks)
-                c, o, n, ti, to = _collect_results(results)
-                all_contacts.extend(c)
-                all_orgs.extend(o)
-                all_notes.extend(n)
-                all_tokens_in  += ti
-                all_tokens_out += to
+                vision_results = await asyncio.gather(*vision_tasks)
+                vc, vo, vn, vti, vto = _collect_results(list(vision_results))
+                vision_tokens_in += vti; vision_tokens_out += vto
+                if vc:
+                    all_contacts = vc; all_orgs = vo
+                    all_notes = [f"[Vision-Fallback] {n}" for n in vn]
 
-            # Vision-Fallback: wenn Text-Extraktion 0 Kontakte liefert oder kein Text vorhanden
-            if not all_contacts:
-                log.info("extract-contacts [pdf-vision-fallback] %s: Text lieferte 0 Kontakte, versuche Vision…",
-                         payload.file_name)
-                page_images = _pdf_pages_to_images(content_bytes)
-                if page_images:
-                    vision_tasks = [
-                        _extract_chunk(
-                            content_text=None,
-                            image_b64=img_b64, image_mime="image/png",
-                            exclude_identity=payload.exclude_identity,
-                            available_fields=payload.available_fields,
-                            label=f"pdf-vision-{i+1}/{len(page_images)}",
-                            file_name=payload.file_name,
-                            model=payload.vision_model,  # Vision-Modell!
-                        )
-                        for i, img_b64 in enumerate(page_images)
-                    ]
-                    vision_results = await asyncio.gather(*vision_tasks)
-                    vc, vo, vn, vti, vto = _collect_results(vision_results)
-                    vision_tokens_in  += vti
-                    vision_tokens_out += vto
-                    if vc:
-                        log.info("extract-contacts [pdf-vision-fallback] %s: Vision fand %d Kontakte!",
-                                 payload.file_name, len(vc))
-                        # Vision-Ergebnisse ersetzen die leeren Text-Ergebnisse
-                        all_contacts = vc
-                        all_orgs = vo
-                        all_notes = [f"[Vision-Fallback] {n}" for n in vn]
-                    else:
-                        log.warning("extract-contacts [pdf-vision-fallback] %s: Auch Vision fand 0 Kontakte",
-                                    payload.file_name)
-                else:
-                    log.warning("extract-contacts [pdf] %s: Vision-Fallback nicht möglich (keine Bilder)",
-                                payload.file_name)
-                    if not pdf_text.strip():
-                        all_notes.append("PDF enthielt keinen lesbaren Text und Vision-Fallback war nicht verfügbar.")
-
-        # ── vCard → mechanisches Parsing (kein GPT nötig) ──────────────────
-        elif ft == "vcf":
-            vcf_contacts = _parse_vcf(content_bytes)
-            all_contacts.extend(vcf_contacts)
-            if vcf_contacts:
-                # Organisationen aus vCard-Kontakten sammeln
-                seen_orgs = set()
-                for c in vcf_contacts:
-                    org_name = c.pop("organization", None)
-                    if org_name and org_name not in seen_orgs:
-                        seen_orgs.add(org_name)
-                        all_orgs.append({"name": org_name})
-                all_notes.append(f"{len(vcf_contacts)} Kontakte aus vCard importiert.")
-            else:
-                all_notes.append("vCard-Datei enthielt keine auswertbaren Kontakte.")
-
-        # ── Dokumente (DOCX, RTF, ODT, EML) → Text → GPT ─────────────────
-        elif ft in ("docx", "rtf", "odt", "eml"):
-            extractors = {
-                "docx": _extract_docx_text,
-                "rtf":  _extract_rtf_text,
-                "odt":  _extract_odt_text,
-                "eml":  _extract_eml_text,
-            }
-            doc_text = extractors[ft](content_bytes)
-            if not doc_text.strip():
-                all_notes.append(f"{ft.upper()}-Datei enthielt keinen lesbaren Text.")
-            else:
-                log.info("extract-contacts [%s] %s: %d Zeichen Text extrahiert",
-                         ft, payload.file_name, len(doc_text))
-
-                chunk_size = 6000
-                text_chunks = [doc_text[i:i+chunk_size] for i in range(0, len(doc_text), chunk_size)]
-                total = len(text_chunks)
-
-                tasks = [
-                    _extract_chunk(
-                        content_text=chunk, image_b64=None, image_mime=None,
-                        exclude_identity=payload.exclude_identity,
-                        available_fields=payload.available_fields,
-                        label=f"{ft}-chunk-{i+1}/{total}", file_name=payload.file_name,
-                        model=payload.model,
-                    )
-                    for i, chunk in enumerate(text_chunks)
-                ]
-                results = await asyncio.gather(*tasks)
-                c, o, n, ti, to = _collect_results(results)
-                all_contacts.extend(c)
-                all_orgs.extend(o)
-                all_notes.extend(n)
-                all_tokens_in  += ti
-                all_tokens_out += to
-
-        # ── CSV / Excel / ODS → Zeilen → chunked parallel ─────────────────
-        elif ft in ("csv", "txt", "tsv"):
-            sheet = parse_csv_bytes(content_bytes)
-            sheets = [sheet]
-
-            for sheet in sheets:
-                rows = sheet.get("rows", [])
-                headers = sheet.get("headers", [])
-                sheet_name = sheet.get("name", "")
-
-                all_rows = [headers] + rows if headers else rows
-                chunk_size = 50
-                total_chunks = (len(all_rows) + chunk_size - 1) // chunk_size
-
-                tasks = []
-                for chunk_start in range(0, len(all_rows), chunk_size):
-                    chunk_idx = chunk_start // chunk_size + 1
-                    chunk = all_rows[chunk_start:chunk_start + chunk_size]
-                    text = f"Sheet: {sheet_name}\n" + _rows_to_text_table(chunk)
-                    tasks.append(_extract_chunk(
-                        content_text=text, image_b64=None, image_mime=None,
-                        exclude_identity=payload.exclude_identity,
-                        available_fields=payload.available_fields,
-                        label=f"{sheet_name}-chunk-{chunk_idx}/{total_chunks}",
-                        file_name=payload.file_name,
-                        model=payload.model,
-                    ))
-
-                results = await asyncio.gather(*tasks)
-                c, o, n, ti, to = _collect_results(results)
-                all_contacts.extend(c)
-                all_orgs.extend(o)
-                for note in n:
-                    all_notes.append(f"[{sheet_name}] {note}")
-                all_tokens_in  += ti
-                all_tokens_out += to
-
-        elif ft in ("xlsx", "xls", "ods", "xlsm"):
-            sheets = parse_excel_bytes(content_bytes)
-
-            for sheet in sheets:
-                rows = sheet.get("rows", [])
-                headers = sheet.get("headers", [])
-                sheet_name = sheet.get("name", "")
-
-                all_rows = [headers] + rows if headers else rows
-                chunk_size = 50
-                total_chunks = (len(all_rows) + chunk_size - 1) // chunk_size
-
-                tasks = []
-                for chunk_start in range(0, len(all_rows), chunk_size):
-                    chunk_idx = chunk_start // chunk_size + 1
-                    chunk = all_rows[chunk_start:chunk_start + chunk_size]
-                    text = f"Sheet: {sheet_name}\n" + _rows_to_text_table(chunk)
-                    tasks.append(_extract_chunk(
-                        content_text=text, image_b64=None, image_mime=None,
-                        exclude_identity=payload.exclude_identity,
-                        available_fields=payload.available_fields,
-                        label=f"{sheet_name}-chunk-{chunk_idx}/{total_chunks}",
-                        file_name=payload.file_name,
-                        model=payload.model,
-                    ))
-
-                results = await asyncio.gather(*tasks)
-                c, o, n, ti, to = _collect_results(results)
-                all_contacts.extend(c)
-                all_orgs.extend(o)
-                for note in n:
-                    all_notes.append(f"[{sheet_name}] {note}")
-                all_tokens_in  += ti
-                all_tokens_out += to
-
+    # ── vCard → mechanisches Parsing (kein GPT nötig) ──────────────────
+    elif ft == "vcf":
+        vcf_contacts = _parse_vcf(content_bytes)
+        all_contacts.extend(vcf_contacts)
+        if vcf_contacts:
+            seen_orgs = set()
+            for c in vcf_contacts:
+                org_name = c.pop("organization", None)
+                if org_name and org_name not in seen_orgs:
+                    seen_orgs.add(org_name)
+                    all_orgs.append({"name": org_name})
+            all_notes.append(f"{len(vcf_contacts)} Kontakte aus vCard importiert.")
         else:
-            raise HTTPException(415, f"Nicht unterstütztes Format: {ft}")
+            all_notes.append("vCard-Datei enthielt keine auswertbaren Kontakte.")
 
-    except json.JSONDecodeError as e:
-        log.error("extract-contacts: Ungültiges JSON von GPT: %s", e)
-        raise HTTPException(500, "GPT hat kein valides JSON zurückgegeben")
-    except Exception as e:
-        log.error("extract-contacts: Fehler: %s", e, exc_info=True)
-        raise HTTPException(500, f"Extraktion fehlgeschlagen: {str(e)}")
+    # ── Dokumente (DOCX, RTF, ODT, EML) → Text → GPT ─────────────────
+    elif ft in ("docx", "rtf", "odt", "eml"):
+        extractors = {"docx": _extract_docx_text, "rtf": _extract_rtf_text,
+                      "odt": _extract_odt_text, "eml": _extract_eml_text}
+        doc_text = extractors[ft](content_bytes)
+        if doc_text.strip():
+            chunk_size = 6000
+            text_chunks = [doc_text[i:i+chunk_size] for i in range(0, len(doc_text), chunk_size)]
+            total = len(text_chunks)
+            tasks = [
+                _extract_chunk(
+                    content_text=chunk, image_b64=None, image_mime=None,
+                    exclude_identity=payload.exclude_identity,
+                    available_fields=payload.available_fields,
+                    label=f"{ft}-chunk-{i+1}/{total}", file_name=payload.file_name,
+                    model=payload.model,
+                )
+                for i, chunk in enumerate(text_chunks)
+            ]
+            results = await asyncio.gather(*tasks)
+            c, o, n, ti, to = _collect_results(list(results))
+            all_contacts.extend(c); all_orgs.extend(o); all_notes.extend(n)
+            all_tokens_in += ti; all_tokens_out += to
+        else:
+            all_notes.append(f"{ft.upper()}-Datei enthielt keinen lesbaren Text.")
+
+    # ── CSV / TXT / TSV → Zeilen → chunked parallel ────────────────────
+    elif ft in ("csv", "txt", "tsv"):
+        sheet = parse_csv_bytes(content_bytes)
+        sheet_results = await asyncio.gather(_process_sheet_parallel(
+            sheet, payload.exclude_identity, payload.available_fields, payload.file_name, payload.model
+        ))
+        c, o, n, ti, to = sheet_results[0]
+        all_contacts.extend(c); all_orgs.extend(o); all_notes.extend(n)
+        all_tokens_in += ti; all_tokens_out += to
+
+    # ── Excel / ODS → alle Sheets PARALLEL ────────────────────────────
+    elif ft in ("xlsx", "xls", "ods", "xlsm"):
+        sheets = parse_excel_bytes(content_bytes)
+        log.info("extract-contacts [xlsx] %s: %d Sheets werden parallel verarbeitet", payload.file_name, len(sheets))
+
+        # Alle Sheets gleichzeitig starten (Semaphore begrenzt concurrent GPT-Calls)
+        sheet_tasks = [
+            _process_sheet_parallel(
+                sheet, payload.exclude_identity, payload.available_fields, payload.file_name, payload.model
+            )
+            for sheet in sheets
+        ]
+        sheet_results = await asyncio.gather(*sheet_tasks)
+
+        for c, o, n, ti, to in sheet_results:
+            all_contacts.extend(c); all_orgs.extend(o); all_notes.extend(n)
+            all_tokens_in += ti; all_tokens_out += to
+
+    else:
+        raise HTTPException(415, f"Nicht unterstütztes Format: {ft}")
 
     log.info("extract-contacts FERTIG [%s] %s: %d Kontakte, %d Orgs, text=%d/%d tokens, vision=%d/%d tokens",
              ft, payload.file_name, len(all_contacts), len(all_orgs),
@@ -997,6 +956,136 @@ async def extract_contacts(payload: ExtractContactsRequest, request: Request):
         "vision_tokens_input":  vision_tokens_in,
         "vision_tokens_output": vision_tokens_out,
         "vision_used":         vision_tokens_in > 0,
+    }
+
+
+@router.post("/import/extract-contacts")
+async def extract_contacts(payload: ExtractContactsRequest, request: Request):
+    """
+    Synchroner Endpoint — wartet auf Ergebnis (für kleine Dateien / Rückwärtskompatibilität).
+    Nutzt intern _run_extraction() mit parallelen Sheets.
+    Für große Multi-Sheet Excel: /import/extract-contacts-async verwenden.
+    """
+    content_bytes = base64.b64decode(payload.file_content_base64)
+    try:
+        return await _run_extraction(content_bytes, payload)
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.error("extract-contacts: Fehler: %s", e, exc_info=True)
+        raise HTTPException(500, f"Extraktion fehlgeschlagen: {str(e)}")
+
+
+async def _extract_contacts_background(task_id: str, payload: ExtractContactsAsyncRequest):
+    """
+    Hintergrund-Coroutine für async Extraktion.
+    Läuft unabhängig vom HTTP-Request — kein PHP-Timeout-Problem.
+    Speichert Ergebnis in _import_tasks und ruft optional Callback auf.
+    """
+    try:
+        content_bytes = base64.b64decode(payload.file_content_base64)
+        result = await _run_extraction(content_bytes, payload)
+
+        _import_tasks[task_id]["status"] = "complete"
+        _import_tasks[task_id]["result"] = result
+        log.info("import-async [%s] job=%d: Fertig — %d Kontakte",
+                 task_id[:8], payload.job_id, result.get("total_found", 0))
+
+        # Callback an Laravel
+        callback_url = payload.callback_url
+        if not callback_url and payload.laravel_base_url:
+            callback_url = payload.laravel_base_url.rstrip("/") + "/api/ai/import/complete"
+
+        if callback_url:
+            try:
+                async with httpx.AsyncClient(timeout=30) as client:
+                    resp = await client.post(
+                        callback_url,
+                        json={"job_id": payload.job_id, "task_id": task_id, **result},
+                        headers={"Authorization": f"Bearer {_GATEWAY_SECRET}"},
+                    )
+                    if resp.status_code == 200:
+                        log.info("import-async [%s] job=%d: Callback OK", task_id[:8], payload.job_id)
+                    else:
+                        log.warning("import-async [%s] job=%d: Callback HTTP %d — %s",
+                                    task_id[:8], payload.job_id, resp.status_code, resp.text[:200])
+            except Exception as cb_err:
+                log.warning("import-async [%s] job=%d: Callback fehlgeschlagen: %s — Ergebnis via Polling abrufbar",
+                            task_id[:8], payload.job_id, cb_err)
+
+    except Exception as e:
+        log.error("import-async [%s] job=%d: Extraktion fehlgeschlagen: %s", task_id[:8], payload.job_id, e, exc_info=True)
+        _import_tasks[task_id]["status"] = "failed"
+        _import_tasks[task_id]["error"] = str(e)
+
+        # Failure-Callback
+        fail_url = payload.callback_url
+        if not fail_url and payload.laravel_base_url:
+            fail_url = payload.laravel_base_url.rstrip("/") + "/api/ai/import/failed"
+        elif fail_url:
+            fail_url = fail_url.replace("/import/complete", "/import/failed")
+
+        if fail_url:
+            try:
+                async with httpx.AsyncClient(timeout=15) as client:
+                    await client.post(
+                        fail_url,
+                        json={"job_id": payload.job_id, "task_id": task_id, "reason": str(e)},
+                        headers={"Authorization": f"Bearer {_GATEWAY_SECRET}"},
+                    )
+            except Exception:
+                pass
+
+
+@router.post("/import/extract-contacts-async")
+async def extract_contacts_async(payload: ExtractContactsAsyncRequest, request: Request):
+    """
+    Async Endpoint — kehrt sofort zurück (< 1s), verarbeitet im Hintergrund.
+    Gateway läuft auf VPS ohne PHP-Timeout-Einschränkung.
+    Ergebnis via Callback (production) oder GET /import/status/{task_id} (dev/fallback).
+    """
+    task_id = str(uuid.uuid4())
+    _import_tasks[task_id] = {
+        "status": "processing",
+        "result": None,
+        "error":  None,
+        "job_id": payload.job_id,
+        "file_name": payload.file_name,
+        "created_at": time.time(),
+    }
+    log.info("import-async [%s] job=%d: Starte Hintergrundverarbeitung für '%s'",
+             task_id[:8], payload.job_id, payload.file_name)
+
+    # Fire-and-forget als asyncio Task (läuft im selben Event-Loop)
+    asyncio.create_task(_extract_contacts_background(task_id, payload))
+
+    return {"status": "accepted", "task_id": task_id, "job_id": payload.job_id}
+
+
+@router.get("/import/status/{task_id}")
+async def get_import_status(task_id: str, request: Request):
+    """
+    Polling-Fallback für lokale Dev-Umgebungen wo Callbacks nicht funktionieren.
+    Gibt Extraktion-Status + Ergebnis zurück sobald fertig.
+    Cleanup: Tasks älter als 2h werden entfernt.
+    """
+    # Cleanup alter Tasks (>2h)
+    now = time.time()
+    expired = [tid for tid, t in _import_tasks.items() if now - t.get("created_at", now) > 7200]
+    for tid in expired:
+        _import_tasks.pop(tid, None)
+
+    task = _import_tasks.get(task_id)
+    if not task:
+        raise HTTPException(404, f"Task '{task_id}' nicht gefunden (abgelaufen oder ungültig)")
+
+    return {
+        "task_id":   task_id,
+        "status":    task["status"],           # "processing" | "complete" | "failed"
+        "job_id":    task.get("job_id"),
+        "file_name": task.get("file_name"),
+        "result":    task.get("result"),       # None wenn noch in Bearbeitung
+        "error":     task.get("error"),
     }
 
 
