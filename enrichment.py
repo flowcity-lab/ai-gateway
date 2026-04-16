@@ -13,7 +13,6 @@ import time
 import logging
 import httpx
 from typing import Optional
-from urllib.parse import quote_plus
 from pydantic import BaseModel, Field
 from fastapi import APIRouter, Request, HTTPException, BackgroundTasks
 
@@ -27,9 +26,12 @@ CRAWL4AI_URL = os.environ.get("CRAWL4AI_URL", "http://localhost:11235")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 AI_GATEWAY_SECRET = os.environ.get("AI_GATEWAY_SECRET", "")
 ENRICHMENT_MODEL = os.environ.get("ENRICHMENT_MODEL", "gpt-4o-mini")
+BRAVE_API_KEY = os.environ.get("BRAVE_API_KEY", "")
+BRAVE_SEARCH_URL = "https://api.search.brave.com/res/v1/web/search"
 
 MAX_CONTENT_PER_PAGE = 6000
 MAX_TOTAL_CONTENT = 20000
+BRAVE_MAX_RESULTS = 10
 
 # ── Bekannte Freemail-Domains (Fast-Path, kein Crawl nötig) ──────────
 
@@ -167,22 +169,47 @@ def _enrich_contact(data: EnrichRequest) -> dict:
     if org_website:
         content = _deep_crawl(org_website)
         if content:
-            extracted = _llm_extract_contact(content, name, "org_website", data.custom_field_defs)
+            extracted = _llm_extract_contact(content, name, "org_website", data.custom_field_defs, email)
             if extracted:
                 result.update(extracted)
 
-    # Pfad C: Google-Suche (wenn bisher nichts gefunden oder kein Org)
-    if not result.get("organization_role") and not result.get("linkedin_url") and name:
+    # Pfad C: Brave-Web-Research (wenn bisher nichts gefunden oder kein Org)
+    needs_research = not result.get("organization_role") and not (result.get("social_links") or {}).get("linkedin")
+    # Bei namenlosen Kontakten (nur E-Mail): auch suchen, damit first_name/last_name gefüllt werden
+    has_search_anchor = bool(name) or bool(email)
+    if needs_research and has_search_anchor:
         search_query = _build_search_query(name, email, data.contact_city)
-        search_content = _google_search(search_query)
+        search_content = _brave_search_text(search_query)
         if search_content:
-            extracted = _llm_extract_contact(search_content, name, "google_search", data.custom_field_defs)
+            extracted = _llm_extract_contact(search_content, name, "brave_search", data.custom_field_defs, email)
             if extracted:
-                for k, v in extracted.items():
-                    if k not in result or not result[k]:
-                        result[k] = v
+                _merge_contact_result(result, extracted)
 
     return result
+
+
+def _merge_contact_result(acc: dict, new: dict) -> None:
+    """Fusioniert neue Extraktion in das Ergebnis. Flache Felder nur wenn leer,
+    social_links mergen (bestehende nicht überschreiben)."""
+    for k, v in new.items():
+        if k == "social_links" and isinstance(v, dict):
+            existing = acc.get("social_links") or {}
+            for platform, url in v.items():
+                if url and not existing.get(platform):
+                    existing[platform] = url
+            if existing:
+                acc["social_links"] = existing
+            continue
+        if k == "custom_fields" and isinstance(v, dict):
+            existing = acc.get("custom_fields") or {}
+            for name, val in v.items():
+                if val and not existing.get(name):
+                    existing[name] = val
+            if existing:
+                acc["custom_fields"] = existing
+            continue
+        if k not in acc or not acc[k]:
+            acc[k] = v
 
 
 
@@ -240,10 +267,61 @@ def _crawl_single(url: str) -> str:
         return ""
 
 
-def _google_search(query: str) -> str:
-    """Google-Suche via Crawl4AI."""
-    search_url = f"https://www.google.com/search?q={quote_plus(query)}&hl=de&num=10"
-    return _crawl_single(search_url)
+def _brave_search(query: str, count: int = BRAVE_MAX_RESULTS, country: str = "DE") -> list[dict]:
+    """Brave Web Search API.
+
+    Liefert Liste von Dicts mit Keys: title, url, description, age (optional).
+    Leere Liste wenn kein API-Key gesetzt oder Fehler.
+    """
+    if not BRAVE_API_KEY:
+        log.warning("Brave search skipped: BRAVE_API_KEY not set")
+        return []
+    try:
+        with httpx.Client(timeout=15) as client:
+            resp = client.get(BRAVE_SEARCH_URL, headers={
+                "Accept": "application/json",
+                "Accept-Encoding": "gzip",
+                "X-Subscription-Token": BRAVE_API_KEY,
+            }, params={
+                "q": query,
+                "count": min(max(count, 1), 20),
+                "country": country,
+                "safesearch": "moderate",
+                "text_decorations": "false",
+            })
+            if resp.status_code != 200:
+                log.warning(f"Brave search failed: {resp.status_code}, {resp.text[:200]}")
+                return []
+            data = resp.json()
+            results = (data.get("web") or {}).get("results") or []
+            hits = []
+            for r in results:
+                hits.append({
+                    "title": r.get("title", "") or "",
+                    "url": r.get("url", "") or "",
+                    "description": r.get("description", "") or "",
+                    "age": r.get("age", "") or "",
+                })
+            log.info(f"Brave search: q={query!r}, hits={len(hits)}")
+            return hits
+    except Exception as e:
+        log.warning(f"Brave search exception: {e}")
+        return []
+
+
+def _brave_search_text(query: str, count: int = BRAVE_MAX_RESULTS) -> str:
+    """Brave-Suchergebnisse als markdown-ähnlichen Text für LLM-Input."""
+    hits = _brave_search(query, count=count)
+    if not hits:
+        return ""
+    lines = [f"# Brave-Suchergebnisse: {query}\n"]
+    for i, h in enumerate(hits, 1):
+        lines.append(f"## {i}. {h['title']}")
+        lines.append(f"URL: {h['url']}")
+        if h['description']:
+            lines.append(h['description'])
+        lines.append("")
+    return "\n".join(lines)
 
 
 def _coerce_markdown(r: dict) -> str:
@@ -349,17 +427,17 @@ def _llm_call(system: str, user: str, max_tokens: int = 2000) -> dict:
 
 
 def _discover_website(company_name: str) -> str | None:
-    """Website einer Firma via Google-Suche finden."""
-    content = _google_search(f'"{company_name}" offizielle website')
+    """Offizielle Website einer Firma via Brave Search finden."""
+    content = _brave_search_text(f'"{company_name}" offizielle website impressum')
     if not content:
         return None
     result = _llm_call(
-        'Finde die offizielle Website der Firma. Antworte NUR als JSON: {"website": "https://..." oder null}. Nur Hauptdomain, keine Unterseiten, keine Social-Media-URLs.',
-        f'Firma: "{company_name}"\n\nSuchergebnisse:\n{content}',
+        'Finde die offizielle Website der Firma (Hauptdomain, keine Unterseiten, keine Social-Media-URLs, keine Verzeichnis-Einträge). Antworte NUR als JSON: {"website": "https://..." oder null}.',
+        f'Firma: "{company_name}"\n\nBrave-Suchergebnisse:\n{content}',
         max_tokens=100,
     )
     url = result.get("website")
-    return url if url and url.startswith("http") else None
+    return url if url and isinstance(url, str) and url.startswith("http") else None
 
 
 def _llm_classify_domain(domain: str, content: str) -> str:
@@ -389,16 +467,33 @@ Antworte als JSON mit optionalen Feldern (null wenn nicht erkennbar):
   "billing_zip": "PLZ",
   "billing_city": "Stadt",
   "billing_country": "DE|AT|CH|...",
-  "social_links": {"linkedin":"url","instagram":"url","facebook":"url","youtube":"url","xing":"url","tiktok":"url","twitter":"url"},
+  "social_links": {
+    "linkedin": "URL zum LinkedIn-Profil",
+    "instagram": "URL",
+    "website": "zusätzliche Website (nur wenn != Hauptdomain)",
+    "youtube": "URL",
+    "xing": "URL",
+    "facebook": "URL",
+    "tiktok": "URL",
+    "x": "URL zu Twitter/X"
+  },
   "team_members": [{"name":"Name","role":"Rolle","email":"Email","phone":"Tel","linkedin":"URL"}]
 }
-Nur Fakten aus dem Text, keine Annahmen. Bei Unsicherheit: null."""
+Wichtig:
+- social_links: nur die 8 aufgelisteten Plattformen. Bei X/Twitter IMMER unter "x" speichern.
+- Nur Fakten aus dem Text, keine Annahmen. Bei Unsicherheit: null oder Feld weglassen."""
     return _llm_call(system, f"Website {website}:\n\n{content}", max_tokens=2000)
 
 
-def _llm_extract_contact(content: str, name: str, source: str, custom_fields: list | None) -> dict:
+def _llm_extract_contact(content: str, name: str, source: str, custom_fields: list | None, email: str | None = None) -> dict:
     """Extrahiert Kontakt-Daten."""
-    ctx = "Suche auf der Firmenwebsite" if source == "org_website" else "Suche in Google-Ergebnissen"
+    ctx_map = {
+        "org_website": "Suche auf der Firmenwebsite",
+        "brave_search": "Suche in Brave-Web-Suchergebnissen",
+        "google_search": "Suche in Web-Suchergebnissen",
+    }
+    ctx = ctx_map.get(source, "Suche in Web-Inhalten")
+
     custom_section = ""
     if custom_fields:
         custom_section = '\n\nZusätzlich unter "custom_fields": {\n'
@@ -406,17 +501,41 @@ def _llm_extract_contact(content: str, name: str, source: str, custom_fields: li
             custom_section += f'  "{f["name"]}": "{f["name"]} (null wenn nicht erkennbar)",\n'
         custom_section += "}"
 
-    system = f"""{ctx} nach Infos über "{name}".
-Antworte als JSON (null wenn nicht erkennbar):
+    # Wenn kein Name bekannt ist: Person über E-Mail identifizieren + Namen mitliefern
+    name_hint = f'"{name}"' if name else f"Person mit E-Mail \"{email or ''}\""
+    name_rules = ""
+    if not name:
+        name_rules = "\n- Wenn Vor-/Nachname eindeutig zur E-Mail-Adresse gehören: first_name + last_name setzen."
+
+    system = f"""{ctx} nach Infos über {name_hint}.
+Antworte als JSON (null oder Feld weglassen wenn nicht erkennbar):
 {{
-  "organization_role": "Berufsbezeichnung",
-  "phone": "Direktnummer (NICHT Firmennummer)",
-  "linkedin_url": "LinkedIn-Profil-URL",
-  "organization_name": "Firma (nur wenn relevant)",
-  "city": "Stadt/Ort"
+  "first_name": "Vorname der Person (nur setzen wenn eindeutig)",
+  "last_name": "Nachname der Person (nur setzen wenn eindeutig)",
+  "organization_role": "Berufsbezeichnung/Titel der Person",
+  "phone": "Direktnummer der Person (NICHT die Firmennummer)",
+  "organization_name": "Firma (nur wenn eindeutig zugeordnet)",
+  "billing_street": "Privatadresse: Straße + Nr (nur wenn eindeutig)",
+  "billing_zip": "Privatadresse: PLZ",
+  "billing_city": "Privatadresse: Stadt/Ort",
+  "billing_country": "Privatadresse: DE|AT|CH|...",
+  "social_links": {{
+    "linkedin": "URL zum LinkedIn-Profil DIESER Person (keine Suchseite)",
+    "instagram": "URL",
+    "website": "eigene Website der Person",
+    "youtube": "URL",
+    "xing": "URL",
+    "facebook": "URL",
+    "tiktok": "URL",
+    "x": "URL zu Twitter/X der Person"
+  }}
 }}{custom_section}
-Nur eindeutige Zuordnungen. Keine Verwechslungen mit Namensvetter."""
-    return _llm_call(system, f'Infos über "{name}":\n\n{content}', max_tokens=800)
+Wichtig:
+- Keine Verwechslungen mit Namensvetter.
+- social_links: nur die 8 aufgelisteten Keys. Keine Suchseiten, keine allgemeinen Firmen-URLs.
+- Nur eindeutige Zuordnungen zur Person, keine Annahmen.{name_rules}"""
+    user_msg = f'Infos über {name_hint}:\n\n{content}'
+    return _llm_call(system, user_msg, max_tokens=900)
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -438,7 +557,9 @@ def _extract_domain(email_or_url: str) -> str:
 
 
 def _build_search_query(name: str, email: str | None, city: str | None) -> str:
-    parts = [f'"{name}"']
+    parts = []
+    if name:
+        parts.append(f'"{name}"')
     if email:
         parts.append(f'"{email}"')
     if city:

@@ -287,18 +287,30 @@ Du bist ein Experte für Datenimport von Kontaktlisten. Deine Aufgabe: Spalten a
 eines Trainers oder Coaches den richtigen Kontaktfeldern zuordnen.
 
 Verfügbare System-Felder:
-  first_name        — Vorname
-  last_name         — Nachname
-  full_name         — Vollständiger Name (wird automatisch in Vor- + Nachname gesplittet)
-  email             — E-Mail-Adresse
-  phone             — Telefonnummer (Mobil oder Festnetz)
-  date_of_birth     — Geburtsdatum
-  organization_name — Firmenname / Organisation / Arbeitgeber
-  organization_role — Position / Funktion / Berufsbezeichnung in der Firma
-  notes             — Notizen, Freitext, sonstige Bemerkungen
-  doi_confirmed_at  — DOI-Bestätigungsdatum (Double Opt-In / Einwilligung)
-  status            — Kontaktstatus: lead, interessent, kunde, inaktiv
-  _ignore           — Spalte NICHT importieren
+  first_name         — Vorname
+  last_name          — Nachname
+  full_name          — Vollständiger Name (wird automatisch in Vor- + Nachname gesplittet)
+  email              — E-Mail-Adresse
+  phone              — Telefonnummer (Mobil oder Festnetz)
+  date_of_birth      — Geburtsdatum
+  organization_name  — Firmenname / Organisation / Arbeitgeber
+  organization_role  — Position / Funktion / Berufsbezeichnung in der Firma
+  notes              — Notizen, Freitext, sonstige Bemerkungen
+  doi_confirmed_at   — DOI-Bestätigungsdatum (Double Opt-In / Einwilligung)
+  status             — Kontaktstatus: lead, interessent, kunde, inaktiv
+  billing_street     — Rechnungsadresse: Straße + Hausnummer
+  billing_zip        — Rechnungsadresse: PLZ
+  billing_city       — Rechnungsadresse: Stadt / Ort
+  billing_country    — Rechnungsadresse: Land
+  social.linkedin    — LinkedIn-Profil-URL
+  social.instagram   — Instagram-Profil-URL
+  social.website     — Persönliche Website / Homepage des Kontakts
+  social.youtube     — YouTube-Kanal-URL
+  social.xing        — Xing-Profil-URL
+  social.facebook    — Facebook-Profil-URL
+  social.tiktok      — TikTok-Profil-URL
+  social.x           — X (Twitter)-Profil-URL
+  _ignore            — Spalte NICHT importieren
 
 Regeln:
 1. Schau dir SOWOHL den Spaltennamen ALS AUCH die Beispielwerte an. Die Werte sind wichtiger.
@@ -405,12 +417,23 @@ DOI (Double Opt-In / Einwilligung) — WICHTIG:
    - Wenn nur "Ja"/"Yes"/"true"/1 ohne Datum: "doi_confirmed_at": "today" (wird vom System auf heute gesetzt).
    - Wenn "Nein"/"No"/"false"/0 oder leer: "doi_confirmed_at": null.
 
-CUSTOM FIELDS — WICHTIG:
-9. Die Standardfelder sind: first_name, last_name, email, phone, organization_name, organization_role, date_of_birth, notes, doi_confirmed_at.
-10. ALLE weiteren Informationen pro Kontakt gehören in "custom_fields" — z.B. Adresse, Stadt, PLZ, Land, Region, Branche, Beruf, Titel, Website, Kundennummer, Abteilung, Geschlecht, Sprache, etc.
-11. Wenn der Trainer bereits eigene Custom-Felder hat (werden im User-Prompt angegeben), verwende EXAKT deren Namen als Keys.
-12. Für neue Felder: verwende aussagekräftige, kurze deutsche Feldnamen als Keys (z.B. "Straße", "PLZ", "Stadt", "Land", "Branche", "Website").
-13. Adressfelder IMMER einzeln aufteilen: "Straße", "PLZ", "Stadt", "Land" — NICHT als ein zusammengesetztes Feld.
+STANDARDFELDER (gehören NICHT in custom_fields):
+9. Die Standardfelder sind: first_name, last_name, email, phone, organization_name, organization_role, date_of_birth, notes, doi_confirmed_at,
+   billing_street, billing_zip, billing_city, billing_country, social_links.
+10. Adressdaten gehören IMMER in die billing_*-Felder (NICHT in custom_fields):
+    - billing_street: Straße + Hausnummer (z.B. "Schulgasse 17")
+    - billing_zip:    PLZ
+    - billing_city:   Stadt / Ort
+    - billing_country:Land
+11. Social-Media-Links und persönliche Website gehören in "social_links" als Objekt mit FESTEN Keys:
+    Erlaubte Keys: linkedin, instagram, website, youtube, xing, facebook, tiktok, x.
+    Beispiel: "social_links": {"linkedin": "https://linkedin.com/in/...", "website": "https://..."}
+    Nur befüllte Keys angeben — niemals leere Strings.
+
+CUSTOM FIELDS — nur für alles WEITERE:
+12. ALLE weiteren Informationen pro Kontakt (die nicht in die Standardfelder passen) gehören in "custom_fields" — z.B. Region, Branche, Beruf, akademischer Titel, Kundennummer, Abteilung, Geschlecht, Sprache, etc.
+13. Wenn der Trainer bereits eigene Custom-Felder hat (werden im User-Prompt angegeben), verwende EXAKT deren Namen als Keys.
+14. Für neue Felder: verwende aussagekräftige, kurze deutsche Feldnamen als Keys.
 
 Antworte ausschließlich mit validem JSON:
 {
@@ -426,11 +449,15 @@ Antworte ausschließlich mit validem JSON:
       "date_of_birth": null,
       "doi_confirmed_at": "2024-03-15",
       "notes": null,
+      "billing_street": "Schulgasse 17",
+      "billing_zip": "6850",
+      "billing_city": "Dornbirn",
+      "billing_country": "Österreich",
+      "social_links": {
+        "linkedin": "https://linkedin.com/in/stefan-holzer",
+        "website":  "https://stefan-holzer.at"
+      },
       "custom_fields": {
-        "Straße": "Schulgasse 17",
-        "PLZ": "6850",
-        "Stadt": "Dornbirn",
-        "Land": "Österreich",
         "Branche": "Gesundheitswesen"
       },
       "confidence": 0.95,
