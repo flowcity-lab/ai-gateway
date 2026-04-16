@@ -13,6 +13,7 @@ import time
 import logging
 import httpx
 from typing import Optional
+from urllib.parse import quote_plus
 from pydantic import BaseModel, Field
 from fastapi import APIRouter, Request, HTTPException, BackgroundTasks
 
@@ -241,8 +242,34 @@ def _crawl_single(url: str) -> str:
 
 def _google_search(query: str) -> str:
     """Google-Suche via Crawl4AI."""
-    search_url = f"https://www.google.com/search?q={httpx.URL(query)}&hl=de&num=10"
+    search_url = f"https://www.google.com/search?q={quote_plus(query)}&hl=de&num=10"
     return _crawl_single(search_url)
+
+
+def _coerce_markdown(r: dict) -> str:
+    """Robuste Markdown-Extraktion aus einem Crawl4AI-Result.
+
+    Crawl4AI liefert je nach Version:
+      - markdown als String (alt)
+      - markdown als Dict mit raw_markdown/fit_markdown (neu, ab ~v0.4)
+      - markdown_v2 als Dict mit raw_markdown (Übergangsformat)
+      - cleaned_html / fit_html als finaler Fallback
+    """
+    raw = r.get("markdown")
+    if isinstance(raw, dict):
+        md = raw.get("raw_markdown") or raw.get("fit_markdown") or raw.get("markdown_with_citations") or ""
+        if md:
+            return md
+    elif isinstance(raw, str) and raw:
+        return raw
+
+    v2 = r.get("markdown_v2")
+    if isinstance(v2, dict):
+        md = v2.get("raw_markdown") or v2.get("fit_markdown") or ""
+        if md:
+            return md
+
+    return r.get("cleaned_html") or r.get("fit_html") or ""
 
 
 def _extract_markdown(data: dict, source_url: str) -> str:
@@ -253,15 +280,17 @@ def _extract_markdown(data: dict, source_url: str) -> str:
     if not results and isinstance(data, list):
         results = data
 
+    log.info(f"Crawl4AI returned {len(results)} result(s) for {source_url}")
+
     parts = []
     total = 0
+    skipped_short = 0
     for r in results:
         if not isinstance(r, dict):
             continue
-        md = r.get("markdown") or ""
-        if not md and "markdown_v2" in r:
-            md = r["markdown_v2"].get("raw_markdown", "")
+        md = _coerce_markdown(r)
         if not md or len(md) < 50:
+            skipped_short += 1
             continue
         page_url = r.get("url", source_url)
         if len(md) > MAX_CONTENT_PER_PAGE:
@@ -270,6 +299,13 @@ def _extract_markdown(data: dict, source_url: str) -> str:
             break
         parts.append(f"=== SEITE: {page_url} ===\n{md}")
         total += len(md)
+
+    if not parts and results:
+        first = results[0] if isinstance(results[0], dict) else {}
+        log.warning(
+            f"_extract_markdown: 0 usable pages from {len(results)} result(s) "
+            f"(skipped_short={skipped_short}, keys={list(first.keys())[:8]})"
+        )
 
     return "\n\n".join(parts)
 
