@@ -58,6 +58,33 @@ COUNTRY_ALIASES = {
 }
 DEFAULT_BRAVE_COUNTRY = "DE"
 
+# ── User-Sprache für lokalisierte Ausgaben (z.B. Ländernamen) ────────
+# Der Locale-Code (de/en/fr/it/...) wird vom Laravel-Handler mitgegeben.
+# Die LLM-Prompts bekommen daraus einen Klartextnamen für bessere Steuerung.
+LOCALE_LANGUAGE_NAMES = {
+    "de": "Deutsch",
+    "en": "Englisch",
+    "fr": "Französisch",
+    "it": "Italienisch",
+    "es": "Spanisch",
+    "pt": "Portugiesisch",
+    "nl": "Niederländisch",
+    "pl": "Polnisch",
+}
+DEFAULT_LOCALE = "de"
+
+
+def _language_name(locale: Optional[str]) -> str:
+    """Gibt den ausgeschriebenen Sprachnamen (deutsch) für einen Locale-Code zurück.
+
+    Unbekannte Codes werden als ISO-Code durchgereicht, damit das LLM sie trotzdem
+    korrekt interpretieren kann (GPT kennt gängige Locale-Codes).
+    """
+    if not locale:
+        return LOCALE_LANGUAGE_NAMES[DEFAULT_LOCALE]
+    key = str(locale).strip().lower().split("_")[0]
+    return LOCALE_LANGUAGE_NAMES.get(key, key or LOCALE_LANGUAGE_NAMES[DEFAULT_LOCALE])
+
 # ── Generische Firmennamen-Suffixe für Name-Simplification ───────────
 # Wird genutzt, um z.B. "Gerald Kern Seminare" → "Gerald Kern" zu vereinfachen,
 # damit die Domain gerald-kern.com gefunden wird (enthält "Seminare" nicht).
@@ -100,6 +127,10 @@ class EnrichRequest(BaseModel):
 
     # Benutzerdefinierte Felder (Kontakt)
     custom_field_defs: Optional[list] = None
+
+    # User-Sprache (z.B. "de", "en", "fr") — steuert LLM-Output-Sprache
+    # für lokalisierbare Felder wie billing_country.
+    locale: Optional[str] = None
 
 
 def _verify(request: Request):
@@ -212,7 +243,7 @@ def _enrich_organization(data: EnrichRequest) -> dict:
     if website:
         content = _deep_crawl(website)
         if content:
-            extracted = _llm_extract_org(content, website)
+            extracted = _llm_extract_org(content, website, locale=data.locale)
             if extracted:
                 result.update(extracted)
         return result
@@ -220,7 +251,7 @@ def _enrich_organization(data: EnrichRequest) -> dict:
     # Pfad C (Snippet-Fallback): keine Website gefunden → aus den Brave-Snippets
     # so viel extrahieren wie möglich (Beschreibung, Branche, Adresse, Telefon).
     if search_snippets:
-        extracted = _llm_extract_org(search_snippets, "snippets://brave")
+        extracted = _llm_extract_org(search_snippets, "snippets://brave", locale=data.locale)
         if extracted:
             for k, v in extracted.items():
                 if v and not result.get(k):
@@ -254,7 +285,7 @@ def _enrich_contact(data: EnrichRequest) -> dict:
     if org_website:
         content = _deep_crawl(org_website)
         if content:
-            extracted = _llm_extract_contact(content, name, "org_website", data.custom_field_defs, email)
+            extracted = _llm_extract_contact(content, name, "org_website", data.custom_field_defs, email, locale=data.locale)
             if extracted:
                 result.update(extracted)
 
@@ -266,7 +297,7 @@ def _enrich_contact(data: EnrichRequest) -> dict:
         search_query = _build_search_query(name, email, data.contact_city)
         search_content = _brave_search_text(search_query)
         if search_content:
-            extracted = _llm_extract_contact(search_content, name, "brave_search", data.custom_field_defs, email)
+            extracted = _llm_extract_contact(search_content, name, "brave_search", data.custom_field_defs, email, locale=data.locale)
             if extracted:
                 _merge_contact_result(result, extracted)
 
@@ -656,11 +687,15 @@ def _llm_classify_domain(domain: str, content: str) -> str:
     return result.get("type", "unknown")
 
 
-def _llm_extract_org(content: str, website: str) -> dict:
-    """Extrahiert Organisations-Daten aus gecrawltem Content."""
-    system = """Analysiere den Website-Inhalt und extrahiere Firmeninformationen.
+def _llm_extract_org(content: str, website: str, locale: Optional[str] = None) -> dict:
+    """Extrahiert Organisations-Daten aus gecrawltem Content.
+
+    ``locale`` steuert die Sprache lokalisierbarer Felder (aktuell ``billing_country``).
+    """
+    lang = _language_name(locale)
+    system = f"""Analysiere den Website-Inhalt und extrahiere Firmeninformationen.
 Antworte als JSON mit optionalen Feldern (null wenn nicht erkennbar):
-{
+{{
   "description": "Kurze Beschreibung (max 200 Zeichen)",
   "industry": "Branche",
   "employee_count": "1-10|11-50|51-200|201-500|501-1000|1001-5000|5001+",
@@ -672,8 +707,8 @@ Antworte als JSON mit optionalen Feldern (null wenn nicht erkennbar):
   "billing_street": "Straße + Nr",
   "billing_zip": "PLZ",
   "billing_city": "Stadt",
-  "billing_country": "DE|AT|CH|...",
-  "social_links": {
+  "billing_country": "Land als ausgeschriebener Name in der Sprache {lang}",
+  "social_links": {{
     "linkedin": "URL zum LinkedIn-Profil",
     "instagram": "URL",
     "website": "zusätzliche Website (nur wenn != Hauptdomain)",
@@ -682,9 +717,9 @@ Antworte als JSON mit optionalen Feldern (null wenn nicht erkennbar):
     "facebook": "URL",
     "tiktok": "URL",
     "x": "URL zu Twitter/X"
-  },
-  "team_members": [{"name":"Name","role":"Rolle","email":"Email","phone":"Tel","linkedin":"URL"}]
-}
+  }},
+  "team_members": [{{"name":"Name","role":"Rolle","email":"Email","phone":"Tel","linkedin":"URL"}}]
+}}
 Wichtig:
 - social_links: nur die 8 aufgelisteten Plattformen. Bei X/Twitter IMMER unter "x" speichern.
 - founded_year: Steht oft NUR auf "Über uns" / "About" / "Impressum" / "Unternehmen". Gezielt
@@ -692,18 +727,31 @@ Wichtig:
 - vat_id / legal_form: Fast immer im Impressum (z.B. "USt-IdNr: DE123...", "ATU12345678",
   "CHE-123.456.789" oder am Ende der Seite). Rechtsform oft Teil des Firmennamens.
 - billing_street/zip/city: Aus Impressum oder Kontakt-Abschnitt (primäre Geschäftsadresse).
+- billing_country: IMMER als ausgeschriebener Ländername in der Sprache {lang}
+  (keine ISO-Codes, keine Abkürzungen). Übersetze den erkannten Ländernamen bei Bedarf.
 - Nur Fakten aus dem Text, keine Annahmen. Bei Unsicherheit: null oder Feld weglassen."""
     return _llm_call(system, f"Website {website}:\n\n{content}", max_tokens=2000)
 
 
-def _llm_extract_contact(content: str, name: str, source: str, custom_fields: list | None, email: str | None = None) -> dict:
-    """Extrahiert Kontakt-Daten."""
+def _llm_extract_contact(
+    content: str,
+    name: str,
+    source: str,
+    custom_fields: list | None,
+    email: str | None = None,
+    locale: Optional[str] = None,
+) -> dict:
+    """Extrahiert Kontakt-Daten.
+
+    ``locale`` steuert die Sprache lokalisierbarer Felder (aktuell ``billing_country``).
+    """
     ctx_map = {
         "org_website": "Suche auf der Firmenwebsite",
         "brave_search": "Suche in Brave-Web-Suchergebnissen",
         "google_search": "Suche in Web-Suchergebnissen",
     }
     ctx = ctx_map.get(source, "Suche in Web-Inhalten")
+    lang = _language_name(locale)
 
     custom_section = ""
     if custom_fields:
@@ -729,7 +777,7 @@ Antworte als JSON (null oder Feld weglassen wenn nicht erkennbar):
   "billing_street": "Privatadresse: Straße + Nr (nur wenn eindeutig)",
   "billing_zip": "Privatadresse: PLZ",
   "billing_city": "Privatadresse: Stadt/Ort",
-  "billing_country": "Privatadresse: DE|AT|CH|...",
+  "billing_country": "Privatadresse: Land als ausgeschriebener Name in der Sprache {lang}",
   "social_links": {{
     "linkedin": "URL zum LinkedIn-Profil DIESER Person (keine Suchseite)",
     "instagram": "URL",
@@ -744,6 +792,8 @@ Antworte als JSON (null oder Feld weglassen wenn nicht erkennbar):
 Wichtig:
 - Keine Verwechslungen mit Namensvetter.
 - social_links: nur die 8 aufgelisteten Keys. Keine Suchseiten, keine allgemeinen Firmen-URLs.
+- billing_country: IMMER als ausgeschriebener Ländername in der Sprache {lang}
+  (keine ISO-Codes, keine Abkürzungen). Übersetze den erkannten Ländernamen bei Bedarf.
 - Nur eindeutige Zuordnungen zur Person, keine Annahmen.{name_rules}"""
     user_msg = f'Infos über {name_hint}:\n\n{content}'
     return _llm_call(system, user_msg, max_tokens=900)
