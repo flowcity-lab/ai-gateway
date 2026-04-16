@@ -23,6 +23,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from import_parser import router as import_parser_router, _cleanup_loop as import_cleanup_loop
+from enrichment import router as enrichment_router
 
 # ── Konfiguration (Umgebungsvariablen) ────────────────────────────────
 
@@ -99,6 +100,7 @@ app.add_middleware(
 
 # ── Import-Parser Router ─────────────────────────────────────────────
 app.include_router(import_parser_router)
+app.include_router(enrichment_router)
 
 # ── Stream-Token Store (kurzlebig, in-memory) ────────────────────────
 # Token → {data: ChatRequest-dict, created_at: timestamp}
