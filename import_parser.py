@@ -466,13 +466,35 @@ Antworte ausschließlich mit validem JSON:
   ],
   "organizations": [
     {
-      "name": "Ärztekammer Vorarlberg",
-      "website": null,
-      "address": "Schulgasse 17, 6850 Dornbirn"
+      "name":             "Ärztekammer Vorarlberg",
+      "website":          "https://www.aerztekammer.at",
+      "phone":            "+43 5522 12345",
+      "email":            "office@aerztekammer.at",
+      "billing_street":   "Schulgasse 17",
+      "billing_zip":      "6850",
+      "billing_city":     "Dornbirn",
+      "billing_country":  "Österreich",
+      "industry":         "Gesundheitswesen",
+      "notes":            null
     }
   ],
   "chunk_notes": "200 Zeilen verarbeitet, 45 Kontakte gefunden, 12 Zeilen waren KPI-Daten"
 }
+
+ORGANISATIONS-SCHEMA — pro Eintrag folgende Felder liefern (null wenn unbekannt, niemals leeren String):
+- name             (Pflicht, exakt wie im Dokument)
+- website          (URL oder Domain)
+- phone            (Haupt-/Firmennummer, nicht die einer einzelnen Person)
+- email            (Firmen-Email, z.B. info@..., office@...)
+- billing_street   (Straße + Hausnummer der BETRIEBS-/Rechnungsadresse)
+- billing_zip      (PLZ)
+- billing_city     (Stadt)
+- billing_country  (Land ausgeschrieben)
+- industry         (Branche in kurzer Form: "Gesundheitswesen", "IT-Dienstleistung", "Handel")
+- notes            (freier Text falls relevante Zusatzinfo)
+
+WICHTIG: Übernimm Org-Adresse NUR wenn sie eindeutig die Firmenadresse ist (Briefkopf, Impressum, Rechnungsabsender).
+Private Wohnadressen von Mitarbeitern NICHT als Firmenadresse eintragen.
 """.strip()
 
 

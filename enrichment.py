@@ -696,6 +696,7 @@ def _llm_extract_org(content: str, website: str, locale: Optional[str] = None) -
     system = f"""Analysiere den Website-Inhalt und extrahiere Firmeninformationen.
 Antworte als JSON mit optionalen Feldern (null wenn nicht erkennbar):
 {{
+  "name": "Offizieller Firmenname (wie im Impressum / auf der Website ausgeschrieben)",
   "description": "Kurze Beschreibung (max 200 Zeichen)",
   "industry": "Branche",
   "employee_count": "1-10|11-50|51-200|201-500|501-1000|1001-5000|5001+",
@@ -721,6 +722,9 @@ Antworte als JSON mit optionalen Feldern (null wenn nicht erkennbar):
   "team_members": [{{"name":"Name","role":"Rolle","email":"Email","phone":"Tel","linkedin":"URL"}}]
 }}
 Wichtig:
+- name: Nur setzen wenn der offizielle Firmenname eindeutig aus Impressum/Header/Footer
+  hervorgeht (z.B. "ACME Solutions GmbH"). KEINE Domain-Umkehr, keine Abkürzungen, keine
+  Slogans. Bei Unsicherheit: null.
 - social_links: nur die 8 aufgelisteten Plattformen. Bei X/Twitter IMMER unter "x" speichern.
 - founded_year: Steht oft NUR auf "Über uns" / "About" / "Impressum" / "Unternehmen". Gezielt
   nach Formulierungen wie "gegründet YYYY", "seit YYYY", "founded in YYYY", "since YYYY" suchen.
