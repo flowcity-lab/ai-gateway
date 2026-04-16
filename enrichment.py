@@ -12,11 +12,16 @@ import json
 import time
 import logging
 import httpx
+from contextvars import ContextVar
 from typing import Optional
 from pydantic import BaseModel, Field
 from fastapi import APIRouter, Request, HTTPException, BackgroundTasks
 
 log = logging.getLogger("enrichment")
+
+# Pipeline-lokaler Token-Akkumulator (pro Background-Task isoliert).
+# Wird in _enrich_pipeline initialisiert; _llm_call addiert die Usage auf.
+_usage_acc: ContextVar[Optional[dict]] = ContextVar("_usage_acc", default=None)
 
 router = APIRouter(prefix="/enrich", tags=["enrichment"])
 
@@ -41,6 +46,18 @@ OBVIOUS_FREEMAIL = {
     "live.com", "live.de", "icloud.com", "me.com", "mac.com",
 }
 
+# ── Länderkennung → Brave-country-Parameter ──────────────────────────
+# Brave akzeptiert ISO 3166-1 alpha-2 Codes. Wir normalisieren beliebige
+# User-Eingaben (z.B. "Deutschland", "Österreich") auf den Code.
+
+COUNTRY_ALIASES = {
+    "de": "DE", "deutschland": "DE", "germany": "DE",
+    "at": "AT", "oesterreich": "AT", "österreich": "AT", "austria": "AT",
+    "ch": "CH", "schweiz": "CH", "switzerland": "CH",
+    "li": "AT",  # Liechtenstein — AT liefert bessere Resultate als DE
+}
+DEFAULT_BRAVE_COUNTRY = "DE"
+
 # ── Request/Response Models ──────────────────────────────────────────
 
 class EnrichRequest(BaseModel):
@@ -51,6 +68,13 @@ class EnrichRequest(BaseModel):
     # Organisation-Daten
     org_name: Optional[str] = None
     org_website: Optional[str] = None
+    org_email: Optional[str] = None
+    org_phone: Optional[str] = None
+    org_street: Optional[str] = None
+    org_zip: Optional[str] = None
+    org_city: Optional[str] = None
+    org_country: Optional[str] = None
+    org_vat_id: Optional[str] = None
     org_id: Optional[int] = None
 
     # Kontakt-Daten
@@ -87,6 +111,8 @@ async def enrich_process(request: Request, bg: BackgroundTasks):
 def _enrich_pipeline(data: EnrichRequest):
     """Hauptpipeline: Crawl + LLM + Callback."""
     start = time.time()
+    usage = {"prompt_tokens": 0, "completion_tokens": 0, "calls": 0}
+    token = _usage_acc.set(usage)
     try:
         if data.entity_type == "organization":
             result = _enrich_organization(data)
@@ -94,7 +120,11 @@ def _enrich_pipeline(data: EnrichRequest):
             result = _enrich_contact(data)
 
         elapsed = round(time.time() - start, 1)
-        log.info(f"Enrichment done: job_id={data.job_id}, {elapsed}s, fields={list(result.keys())}")
+        log.info(
+            f"Enrichment done: job_id={data.job_id}, {elapsed}s, "
+            f"fields={list(result.keys())}, llm_calls={usage['calls']}, "
+            f"tokens_in={usage['prompt_tokens']}, tokens_out={usage['completion_tokens']}"
+        )
 
         _send_callback(data.callback_url, {
             "job_id": data.job_id,
@@ -102,6 +132,7 @@ def _enrich_pipeline(data: EnrichRequest):
             "entity_type": data.entity_type,
             "data": result,
             "elapsed_seconds": elapsed,
+            "usage": _usage_payload(usage),
         })
 
     except Exception as e:
@@ -111,7 +142,19 @@ def _enrich_pipeline(data: EnrichRequest):
             "status": "error",
             "entity_type": data.entity_type,
             "error": str(e),
+            "usage": _usage_payload(usage),
         })
+    finally:
+        _usage_acc.reset(token)
+
+
+def _usage_payload(usage: dict) -> dict:
+    """Formt den internen Akkumulator in das Laravel-Callback-Schema um."""
+    return {
+        "prompt_tokens": int(usage.get("prompt_tokens") or 0),
+        "completion_tokens": int(usage.get("completion_tokens") or 0),
+        "model": ENRICHMENT_MODEL,
+    }
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -119,27 +162,55 @@ def _enrich_pipeline(data: EnrichRequest):
 # ═══════════════════════════════════════════════════════════════════════
 
 def _enrich_organization(data: EnrichRequest) -> dict:
-    result = {}
+    result: dict = {}
     website = data.org_website
+    country = _normalize_country_code(data.org_country)
+    search_snippets = ""
 
-    # Schritt 1: Website finden wenn nicht vorhanden
+    # Pfad B: Firmen-E-Mail → Domain direkt als Website probieren.
+    # Analog zu Contact-Enrichment; spart eine Brave-Suche bei Firmen-Mails.
+    if not website and data.org_email and not _is_freemail(data.org_email):
+        domain = _extract_domain(data.org_email)
+        if domain:
+            candidate = f"https://{domain}"
+            probe = _crawl_single(candidate)
+            if probe:
+                classification = _llm_classify_domain(domain, probe)
+                if classification == "business":
+                    website = candidate
+                    result["discovered_website"] = candidate
+                    log.info(f"Org-Enrichment: Email-Domain als Website: {domain}")
+
+    # Pfad A: Multi-Query Website-Discovery (Name + Adresse/Phone/VAT)
     if not website and data.org_name:
-        website = _discover_website(data.org_name)
+        website, search_snippets = _discover_website(
+            name=data.org_name,
+            city=data.org_city,
+            zip_code=data.org_zip,
+            phone=data.org_phone,
+            vat_id=data.org_vat_id,
+            country=country,
+        )
         if website:
             result["discovered_website"] = website
 
-    if not website:
+    # Schritt 2: Deep Crawl + LLM-Extraktion (wenn Website vorhanden)
+    if website:
+        content = _deep_crawl(website)
+        if content:
+            extracted = _llm_extract_org(content, website)
+            if extracted:
+                result.update(extracted)
         return result
 
-    # Schritt 2: Deep Crawl
-    content = _deep_crawl(website)
-    if not content:
-        return result
-
-    # Schritt 3: LLM-Extraktion
-    extracted = _llm_extract_org(content, website)
-    if extracted:
-        result.update(extracted)
+    # Pfad C (Snippet-Fallback): keine Website gefunden → aus den Brave-Snippets
+    # so viel extrahieren wie möglich (Beschreibung, Branche, Adresse, Telefon).
+    if search_snippets:
+        extracted = _llm_extract_org(search_snippets, "snippets://brave")
+        if extracted:
+            for k, v in extracted.items():
+                if v and not result.get(k):
+                    result[k] = v
 
     return result
 
@@ -267,7 +338,7 @@ def _crawl_single(url: str) -> str:
         return ""
 
 
-def _brave_search(query: str, count: int = BRAVE_MAX_RESULTS, country: str = "DE") -> list[dict]:
+def _brave_search(query: str, count: int = BRAVE_MAX_RESULTS, country: str = DEFAULT_BRAVE_COUNTRY) -> list[dict]:
     """Brave Web Search API.
 
     Liefert Liste von Dicts mit Keys: title, url, description, age (optional).
@@ -302,16 +373,20 @@ def _brave_search(query: str, count: int = BRAVE_MAX_RESULTS, country: str = "DE
                     "description": r.get("description", "") or "",
                     "age": r.get("age", "") or "",
                 })
-            log.info(f"Brave search: q={query!r}, hits={len(hits)}")
+            log.info(f"Brave search: q={query!r}, country={country}, hits={len(hits)}")
             return hits
     except Exception as e:
         log.warning(f"Brave search exception: {e}")
         return []
 
 
-def _brave_search_text(query: str, count: int = BRAVE_MAX_RESULTS) -> str:
+def _brave_search_text(query: str, count: int = BRAVE_MAX_RESULTS, country: str = DEFAULT_BRAVE_COUNTRY) -> str:
     """Brave-Suchergebnisse als markdown-ähnlichen Text für LLM-Input."""
-    hits = _brave_search(query, count=count)
+    hits = _brave_search(query, count=count, country=country)
+    return _format_hits_as_text(query, hits)
+
+
+def _format_hits_as_text(query: str, hits: list[dict]) -> str:
     if not hits:
         return ""
     lines = [f"# Brave-Suchergebnisse: {query}\n"]
@@ -400,7 +475,12 @@ def _normalize_url(url: str) -> str:
 # ═══════════════════════════════════════════════════════════════════════
 
 def _llm_call(system: str, user: str, max_tokens: int = 2000) -> dict:
-    """Einfacher OpenAI-kompatibeler LLM-Call."""
+    """Einfacher OpenAI-kompatibeler LLM-Call.
+
+    Wenn ein Usage-Akkumulator im ContextVar gesetzt ist (siehe _enrich_pipeline),
+    werden prompt_tokens und completion_tokens darauf aufaddiert — so fließen
+    alle LLM-Calls einer Pipeline in das Laravel-Battery-Tracking.
+    """
     try:
         with httpx.Client(timeout=60) as client:
             resp = client.post("https://api.openai.com/v1/chat/completions", headers={
@@ -419,25 +499,89 @@ def _llm_call(system: str, user: str, max_tokens: int = 2000) -> dict:
             if resp.status_code != 200:
                 log.error(f"LLM call failed: {resp.status_code}, {resp.text[:200]}")
                 return {}
-            content = resp.json()["choices"][0]["message"]["content"]
+            payload = resp.json()
+            acc = _usage_acc.get()
+            if acc is not None:
+                usage = payload.get("usage") or {}
+                acc["prompt_tokens"] += int(usage.get("prompt_tokens") or 0)
+                acc["completion_tokens"] += int(usage.get("completion_tokens") or 0)
+                acc["calls"] += 1
+            content = payload["choices"][0]["message"]["content"]
             return json.loads(content)
     except Exception as e:
         log.error(f"LLM exception: {e}")
         return {}
 
 
-def _discover_website(company_name: str) -> str | None:
-    """Offizielle Website einer Firma via Brave Search finden."""
-    content = _brave_search_text(f'"{company_name}" offizielle website impressum')
-    if not content:
-        return None
-    result = _llm_call(
-        'Finde die offizielle Website der Firma (Hauptdomain, keine Unterseiten, keine Social-Media-URLs, keine Verzeichnis-Einträge). Antworte NUR als JSON: {"website": "https://..." oder null}.',
-        f'Firma: "{company_name}"\n\nBrave-Suchergebnisse:\n{content}',
-        max_tokens=100,
-    )
-    url = result.get("website")
-    return url if url and isinstance(url, str) and url.startswith("http") else None
+def _discover_website(
+    name: str,
+    city: Optional[str] = None,
+    zip_code: Optional[str] = None,
+    phone: Optional[str] = None,
+    vat_id: Optional[str] = None,
+    country: str = DEFAULT_BRAVE_COUNTRY,
+) -> tuple[Optional[str], str]:
+    """Offizielle Website einer Firma via Brave Search finden.
+
+    Probiert mehrere Query-Varianten mit abnehmender Spezifität, damit auch
+    kleine DACH-KMU mit schwachem Web-Footprint gefunden werden.
+
+    Rückgabe: (website_url_or_none, combined_snippet_text_for_fallback).
+    Die Snippets werden zurückgegeben, damit der Caller sie als Fallback an
+    den Feld-Extraktor weitergeben kann wenn keine Website identifizierbar ist.
+    """
+    queries: list[str] = []
+    if vat_id:
+        queries.append(f'"{vat_id}"')
+    if phone:
+        queries.append(f'"{name}" "{phone}"')
+    loc = " ".join(p for p in [zip_code, city] if p)
+    if loc:
+        queries.append(f'"{name}" {loc}')
+    if city:
+        queries.append(f'"{name}" {city} website')
+    queries.append(f'"{name}" impressum')
+    queries.append(f'"{name}"')
+
+    collected_hits: list[dict] = []
+    seen_urls: set[str] = set()
+    for q in queries:
+        hits = _brave_search(q, count=BRAVE_MAX_RESULTS, country=country)
+        for h in hits:
+            if h["url"] and h["url"] not in seen_urls and len(collected_hits) < 15:
+                seen_urls.add(h["url"])
+                collected_hits.append(h)
+
+        if not hits:
+            continue
+
+        content = _format_hits_as_text(q, hits)
+        result = _llm_call(
+            'Finde die offizielle Website der Firma (Hauptdomain, keine Unterseiten, '
+            'keine Social-Media-URLs, keine Verzeichnis-Einträge wie firmenbuch, '
+            'northdata, dnb, kompany). Antworte NUR als JSON: '
+            '{"website": "https://..." oder null}.',
+            f'Firma: "{name}"\n\nBrave-Suchergebnisse:\n{content}',
+            max_tokens=100,
+        )
+        url = result.get("website")
+        if url and isinstance(url, str) and url.startswith("http"):
+            return url, _format_hits_as_text(name, collected_hits)
+
+    return None, _format_hits_as_text(name, collected_hits)
+
+
+def _normalize_country_code(value: Optional[str]) -> str:
+    """Normalisiert beliebige Landesangabe auf den Brave-country-Parameter."""
+    if not value:
+        return DEFAULT_BRAVE_COUNTRY
+    key = value.strip().lower()
+    if key in COUNTRY_ALIASES:
+        return COUNTRY_ALIASES[key]
+    # 2-Buchstaben-Code? → Großbuchstaben akzeptieren
+    if len(key) == 2 and key.isalpha():
+        return key.upper()
+    return DEFAULT_BRAVE_COUNTRY
 
 
 def _llm_classify_domain(domain: str, content: str) -> str:
