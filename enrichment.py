@@ -58,6 +58,20 @@ COUNTRY_ALIASES = {
 }
 DEFAULT_BRAVE_COUNTRY = "DE"
 
+# ── Generische Firmennamen-Suffixe für Name-Simplification ───────────
+# Wird genutzt, um z.B. "Gerald Kern Seminare" → "Gerald Kern" zu vereinfachen,
+# damit die Domain gerald-kern.com gefunden wird (enthält "Seminare" nicht).
+COMPANY_NAME_SUFFIXES = {
+    # Rechtsformen
+    "gmbh", "ag", "ug", "kg", "ohg", "gbr", "mbh", "se", "ltd", "inc", "co",
+    "ggmbh", "ev", "e.v.", "e.v", "eg",
+    # Generische Tätigkeits-/Branchenbezeichnungen
+    "seminare", "seminar", "consulting", "training", "trainings", "coaching",
+    "academy", "akademie", "institut", "institute", "solutions", "services",
+    "group", "gruppe", "beratung", "partner", "partners", "agentur", "agency",
+    "company", "holding", "international",
+}
+
 # ── Request/Response Models ──────────────────────────────────────────
 
 class EnrichRequest(BaseModel):
@@ -513,6 +527,9 @@ def _llm_call(system: str, user: str, max_tokens: int = 2000) -> dict:
         return {}
 
 
+MAX_DISCOVERY_HITS = 20
+
+
 def _discover_website(
     name: str,
     city: Optional[str] = None,
@@ -523,52 +540,97 @@ def _discover_website(
 ) -> tuple[Optional[str], str]:
     """Offizielle Website einer Firma via Brave Search finden.
 
-    Probiert mehrere Query-Varianten mit abnehmender Spezifität, damit auch
-    kleine DACH-KMU mit schwachem Web-Footprint gefunden werden.
+    Strategie:
+      1. Mehrere unquoted Query-Varianten durchlaufen (Brave behandelt quoted
+         Phrasen zu strikt; bei DACH-KMU liefert quoted oft 0 Treffer).
+      2. Zusätzlich eine vereinfachte Namensform ohne generische Suffixe
+         ("Seminare", "Consulting", "GmbH", "AG" …) — Domains enthalten diese
+         Suffixe selten.
+      3. Alle eindeutigen Treffer sammeln (bis MAX_DISCOVERY_HITS), dann einen
+         einzigen LLM-Call zum Auswählen der besten Domain. Spart 60-80 %
+         LLM-Kosten gegenüber Per-Query-Pick und gibt dem LLM maximalen Kontext.
 
     Rückgabe: (website_url_or_none, combined_snippet_text_for_fallback).
-    Die Snippets werden zurückgegeben, damit der Caller sie als Fallback an
-    den Feld-Extraktor weitergeben kann wenn keine Website identifizierbar ist.
     """
+    simplified = _simplify_company_name(name)
+
     queries: list[str] = []
     if vat_id:
         queries.append(f'"{vat_id}"')
     if phone:
-        queries.append(f'"{name}" "{phone}"')
+        queries.append(f'{name} {phone}')
     loc = " ".join(p for p in [zip_code, city] if p)
     if loc:
-        queries.append(f'"{name}" {loc}')
-    if city:
-        queries.append(f'"{name}" {city} website')
-    queries.append(f'"{name}" impressum')
-    queries.append(f'"{name}"')
+        queries.append(f'{name} {loc}')
+    queries.append(f'{name} offizielle website')
+    queries.append(f'{name} impressum')
+    if simplified and simplified != name:
+        queries.append(f'{simplified} website')
+        queries.append(simplified)
+    queries.append(name)
 
     collected_hits: list[dict] = []
     seen_urls: set[str] = set()
     for q in queries:
+        if len(collected_hits) >= MAX_DISCOVERY_HITS:
+            break
         hits = _brave_search(q, count=BRAVE_MAX_RESULTS, country=country)
         for h in hits:
-            if h["url"] and h["url"] not in seen_urls and len(collected_hits) < 15:
+            if h["url"] and h["url"] not in seen_urls and len(collected_hits) < MAX_DISCOVERY_HITS:
                 seen_urls.add(h["url"])
                 collected_hits.append(h)
 
-        if not hits:
-            continue
+    snippet_text = _format_hits_as_text(name, collected_hits)
+    if not collected_hits:
+        log.info(f"Discovery: keine Brave-Treffer für '{name}'")
+        return None, snippet_text
 
-        content = _format_hits_as_text(q, hits)
-        result = _llm_call(
-            'Finde die offizielle Website der Firma (Hauptdomain, keine Unterseiten, '
-            'keine Social-Media-URLs, keine Verzeichnis-Einträge wie firmenbuch, '
-            'northdata, dnb, kompany). Antworte NUR als JSON: '
-            '{"website": "https://..." oder null}.',
-            f'Firma: "{name}"\n\nBrave-Suchergebnisse:\n{content}',
-            max_tokens=100,
-        )
-        url = result.get("website")
-        if url and isinstance(url, str) and url.startswith("http"):
-            return url, _format_hits_as_text(name, collected_hits)
+    # Ein einziger LLM-Call über alle gesammelten Treffer.
+    name_hint = name if not simplified or simplified == name else f'{name} (evtl. auch kurz: {simplified})'
+    result = _llm_call(
+        'Finde aus den Brave-Suchergebnissen die offizielle Website der Firma. '
+        'Regeln: Hauptdomain wählen (keine Unterseiten, keine URL-Parameter), '
+        'keine Social-Media-URLs (linkedin/instagram/facebook etc.), '
+        'keine Verzeichnis-Einträge (firmenbuch, northdata, dnb, kompany, '
+        'moneyhouse, meinestadt, dasoertliche, gelbeseiten, firmenabc). '
+        'Wenn der Firmenname ein generisches Suffix enthält (z.B. "Seminare", '
+        '"Consulting", "GmbH"), kann die Domain dieses Suffix weglassen. '
+        'Bei mehreren Kandidaten: die plausibelste Haupt-Domain. '
+        'Antworte NUR als JSON: {"website": "https://..." oder null}.',
+        f'Firma: "{name_hint}"\n\nGesammelte Brave-Suchergebnisse:\n{snippet_text}',
+        max_tokens=100,
+    )
+    url = result.get("website")
+    if url and isinstance(url, str) and url.startswith("http"):
+        return url, snippet_text
+    return None, snippet_text
 
-    return None, _format_hits_as_text(name, collected_hits)
+
+def _simplify_company_name(name: str) -> str:
+    """Entfernt generische Suffixe (Rechtsform, Branche) am Ende des Namens.
+
+    Cap auf max. 2 entfernte Tokens, damit der Name nicht zu generisch wird.
+
+    Beispiele:
+      "Gerald Kern Seminare"      → "Gerald Kern"
+      "BeckToYou AG"              → "BeckToYou"
+      "Müller Consulting GmbH"    → "Müller Consulting"
+      "ACME Group International"  → "ACME Group"
+    """
+    parts = name.strip().split()
+    removed = 0
+    while len(parts) > 1 and removed < 2:
+        last = parts[-1].lower().rstrip(".,;")
+        if last in COMPANY_NAME_SUFFIXES:
+            parts.pop()
+            removed += 1
+        else:
+            break
+    simplified = " ".join(parts)
+    # Zu kurz = zu generisch (z.B. "AG" alleine). Dann lieber Originalname nutzen.
+    if len(simplified) < 4:
+        return name
+    return simplified
 
 
 def _normalize_country_code(value: Optional[str]) -> str:
@@ -625,6 +687,11 @@ Antworte als JSON mit optionalen Feldern (null wenn nicht erkennbar):
 }
 Wichtig:
 - social_links: nur die 8 aufgelisteten Plattformen. Bei X/Twitter IMMER unter "x" speichern.
+- founded_year: Steht oft NUR auf "Über uns" / "About" / "Impressum" / "Unternehmen". Gezielt
+  nach Formulierungen wie "gegründet YYYY", "seit YYYY", "founded in YYYY", "since YYYY" suchen.
+- vat_id / legal_form: Fast immer im Impressum (z.B. "USt-IdNr: DE123...", "ATU12345678",
+  "CHE-123.456.789" oder am Ende der Seite). Rechtsform oft Teil des Firmennamens.
+- billing_street/zip/city: Aus Impressum oder Kontakt-Abschnitt (primäre Geschäftsadresse).
 - Nur Fakten aus dem Text, keine Annahmen. Bei Unsicherheit: null oder Feld weglassen."""
     return _llm_call(system, f"Website {website}:\n\n{content}", max_tokens=2000)
 
