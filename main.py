@@ -53,6 +53,7 @@ log = logging.getLogger("ai-gateway")
 # ── Globaler State ────────────────────────────────────────────────────
 
 oai_client = None
+oai_async_client = None
 
 
 # ── OpenAI Client ─────────────────────────────────────────────────────
@@ -60,6 +61,11 @@ oai_client = None
 def get_openai_client():
     """Erstellt OpenAI-Client."""
     return openai.OpenAI(api_key=OPENAI_API_KEY)
+
+
+def get_openai_async_client():
+    """Asynchroner OpenAI-Client für SSE-Streaming (blockiert den Event-Loop nicht)."""
+    return openai.AsyncOpenAI(api_key=OPENAI_API_KEY)
 
 
 def get_model_name(requested_model: str) -> str:
@@ -71,8 +77,9 @@ def get_model_name(requested_model: str) -> str:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global oai_client
+    global oai_client, oai_async_client
     oai_client = get_openai_client()
+    oai_async_client = get_openai_async_client()
     log.info("AI-Gateway ready. OpenAI key=%s", "set" if OPENAI_API_KEY else "MISSING")
 
     # Background-Cleanup für Import-Tasks (TTL 2h, Intervall 15 Min)
@@ -771,7 +778,8 @@ async def stream_chat_generator(data: ChatRequest):
         rag_context = list(data.rag_prefetched_chunks or [])
         if not rag_context and data.notebook_ids and data.doc_processor_url:
             yield _status("Durchsuche dein Wissen…", "📚")
-            rag_context = search_documents(
+            rag_context = await asyncio.to_thread(
+                search_documents,
                 query=data.message,
                 notebook_ids=data.notebook_ids,
                 doc_processor_url=data.doc_processor_url,
@@ -804,7 +812,7 @@ async def stream_chat_generator(data: ChatRequest):
 
             # Prüfen ob wir Tool-Calls erwarten — wenn ja, nicht streamen
             if has_tools:
-                response = oai_client.chat.completions.create(**call_params)
+                response = await oai_async_client.chat.completions.create(**call_params)
                 choice = response.choices[0]
 
                 if choice.message.tool_calls:
@@ -847,7 +855,7 @@ async def stream_chat_generator(data: ChatRequest):
                             yield f"event: tool_start\ndata: {json.dumps({'tool': tool_name, 'label': skill_info['label'], 'icon': skill_info['icon']})}\n\n"
 
                         all_tool_calls.append({"id": tc.id, "name": tool_name, "arguments": tool_args})
-                        result = execute_skill(tool_name, tool_args, data.user_id, data.chat_id)
+                        result = await asyncio.to_thread(execute_skill, tool_name, tool_args, data.user_id, data.chat_id)
                         all_tool_results.append({"tool_call_id": tc.id, "name": tool_name, "result": result})
                         skill_success = "error" not in result
 
@@ -890,9 +898,9 @@ async def stream_chat_generator(data: ChatRequest):
             yield _status("Formuliere deine Antwort…", "✍️")
             call_params["stream"] = True
             call_params["stream_options"] = {"include_usage": True}
-            stream_response = oai_client.chat.completions.create(**call_params)
+            stream_response = await oai_async_client.chat.completions.create(**call_params)
 
-            for chunk in stream_response:
+            async for chunk in stream_response:
                 if not chunk.choices:
                     # Usage kommt im letzten Chunk
                     if chunk.usage:
@@ -936,7 +944,7 @@ async def stream_chat_generator(data: ChatRequest):
                 callback_data["rag_citations"] = data.rag_citations
             if data.rag_summary:
                 callback_data["rag_summary"] = data.rag_summary
-            send_callback(callback_url, callback_data)
+            await asyncio.to_thread(send_callback, callback_url, callback_data)
 
     except Exception as e:
         log.error("Stream chat %d: Fehler — %s", data.chat_id, str(e))
@@ -945,7 +953,7 @@ async def stream_chat_generator(data: ChatRequest):
         # Error-Callback
         callback_url = data.callback_url or LARAVEL_CALLBACK_URL
         if callback_url:
-            send_callback(callback_url, {
+            await asyncio.to_thread(send_callback, callback_url, {
                 "chat_id": data.chat_id,
                 "content": f"Fehler bei der Verarbeitung: {str(e)}",
                 "usage": {"input_tokens": 0, "output_tokens": 0},
