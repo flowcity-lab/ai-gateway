@@ -152,25 +152,62 @@ class ChatRequest(BaseModel):
 
 
 # ── Skill-Labels (technischer Name → menschenlesbar) ────────────────
+# Warm, ich-sprechend formuliert — der Nutzer soll spüren, dass die KI für ihn arbeitet.
 
 SKILL_LABELS = {
-    "crm_search": {"label": "CRM durchsuchen", "icon": "🔍"},
-    "crm_create_contact": {"label": "Kontakt anlegen", "icon": "👤"},
-    "crm_update_deal": {"label": "Deal aktualisieren", "icon": "📊"},
-    "crm_create_followup": {"label": "Wiedervorlage erstellen", "icon": "📅"},
-    "content_generate": {"label": "Inhalt generieren", "icon": "✍️"},
-    "image_generate": {"label": "Bild generieren", "icon": "🎨"},
-    "pdf_generate": {"label": "PDF erstellen", "icon": "📄"},
-    "email_generate": {"label": "E-Mail verfassen", "icon": "📧"},
-    "campaign_analyze": {"label": "Kampagne analysieren", "icon": "📈"},
-    "ai_background_task": {"label": "Hintergrund-Aufgabe starten", "icon": "⚙️"},
-    "delegate_to_assistant": {"label": "An Assistenten delegieren", "icon": "🔄"},
+    # CRM (konsolidierte Themen-Skills seit Welle 2)
+    "crm_contacts":          {"label": "Schaue in deinen Kontakten nach…",    "icon": "👥"},
+    "crm_deals":             {"label": "Prüfe deine Deals…",                   "icon": "📊"},
+    "crm_tasks":             {"label": "Sehe deine Aufgaben durch…",           "icon": "✅"},
+    # Events & Kalender
+    "events":                {"label": "Schaue deine Veranstaltungen an…",     "icon": "🎟️"},
+    "calendar":              {"label": "Öffne deinen Kalender…",               "icon": "🗓️"},
+    # Wissen & Erinnerungen
+    "knowledge_search":      {"label": "Durchsuche dein Wissen…",              "icon": "📚"},
+    "memory_manager":        {"label": "Arbeite mit deinen Erinnerungen…",     "icon": "🧠"},
+    # Content & Medien
+    "content_generate":      {"label": "Schreibe einen Inhalt für dich…",      "icon": "✍️"},
+    "image_generate":        {"label": "Male ein Bild für dich…",              "icon": "🎨"},
+    "pdf_generate":          {"label": "Erstelle dein PDF…",                   "icon": "📄"},
+    # Marketing
+    "email_generate":        {"label": "Formuliere eine E-Mail…",              "icon": "📧"},
+    "campaign_analyze":      {"label": "Analysiere deine Kampagne…",           "icon": "📈"},
+    # System & Orchestrierung
+    "ai_background_task":    {"label": "Starte eine Hintergrund-Aufgabe…",     "icon": "⚙️"},
+    "delegate_to_assistant": {"label": "Frage einen Spezialisten…",            "icon": "🤝"},
+    "render_artifact":       {"label": "Gestalte dir eine Visualisierung…",    "icon": "🪄"},
 }
 
-def get_skill_label(skill_name: str) -> dict:
-    """Gibt Label und Icon für einen Skill zurück."""
-    default = {"label": skill_name.replace("_", " ").title(), "icon": "🔧"}
-    return SKILL_LABELS.get(skill_name, default)
+# Action-spezifische Labels: feinere Sprache pro Skill+Action-Kombination.
+# Key-Format: f"{skill_name}:{action}". Fallback: SKILL_LABELS[skill_name].
+ACTION_LABELS = {
+    "crm_contacts:search":      {"label": "Suche in deinen Kontakten…",         "icon": "🔍"},
+    "crm_contacts:create":      {"label": "Lege den Kontakt für dich an…",      "icon": "👤"},
+    "crm_deals:search":         {"label": "Suche nach passenden Deals…",        "icon": "🔍"},
+    "crm_deals:create":         {"label": "Lege einen neuen Deal an…",          "icon": "📊"},
+    "crm_deals:update":         {"label": "Aktualisiere deinen Deal…",          "icon": "📊"},
+    "crm_tasks:search":         {"label": "Sehe deine offenen Aufgaben…",       "icon": "📋"},
+    "crm_tasks:create":         {"label": "Lege dir eine Aufgabe an…",          "icon": "➕"},
+    "crm_tasks:complete":       {"label": "Hake eine Aufgabe ab…",              "icon": "✅"},
+    "events:upcoming":          {"label": "Sehe deine nächsten Events…",         "icon": "📅"},
+    "events:past":              {"label": "Sehe deine vergangenen Events…",      "icon": "🕓"},
+    "events:find":              {"label": "Suche nach einer Veranstaltung…",     "icon": "🔍"},
+    "calendar:list":            {"label": "Sehe deine Termine…",                 "icon": "🗓️"},
+    "calendar:availability":    {"label": "Prüfe deine Verfügbarkeit…",          "icon": "⏱️"},
+    "memory_manager:list":      {"label": "Schaue in deine Erinnerungen…",       "icon": "🧠"},
+    "memory_manager:add":       {"label": "Merke mir etwas für dich…",           "icon": "📌"},
+    "memory_manager:search":    {"label": "Suche in deinen Erinnerungen…",       "icon": "🔎"},
+}
+
+def get_skill_label(skill_name: str, action: str = None) -> dict:
+    """Gibt Label und Icon für einen Skill zurück. Optional verfeinert durch Action."""
+    if action:
+        key = f"{skill_name}:{action}"
+        if key in ACTION_LABELS:
+            return ACTION_LABELS[key]
+    if skill_name in SKILL_LABELS:
+        return SKILL_LABELS[skill_name]
+    return {"label": skill_name.replace("_", " ").title() + "…", "icon": "🔧"}
 
 
 # ── Artifact-System (Universal HTML Visualizer) ──────────────────────
@@ -722,10 +759,18 @@ async def stream_chat_generator(data: ChatRequest):
     all_tool_results = []
     artifacts = []  # Gesammelte render_artifact Ergebnisse
 
+    # Helper: Semantischen Status an das Frontend senden (erscheint unter der Chat-Bubble).
+    def _status(label: str, icon: str = "💭") -> str:
+        return f"event: status\ndata: {json.dumps({'label': label, 'icon': icon}, ensure_ascii=False)}\n\n"
+
     try:
+        # Erstes Lebenszeichen: User hat abgeschickt, wir fangen an nachzudenken.
+        yield _status("Ich überlege kurz…", "💭")
+
         # RAG: Laravel-Orchestrator hat Vorrang, sonst fällt auf eigene Suche zurück.
         rag_context = list(data.rag_prefetched_chunks or [])
         if not rag_context and data.notebook_ids and data.doc_processor_url:
+            yield _status("Durchsuche dein Wissen…", "📚")
             rag_context = search_documents(
                 query=data.message,
                 notebook_ids=data.notebook_ids,
@@ -739,6 +784,10 @@ async def stream_chat_generator(data: ChatRequest):
 
         # Tool-Call-Loop (nicht-gestreamt — nur finale Antwort wird gestreamt)
         for iteration in range(max_iterations):
+            # Vor jedem Modell-Aufruf Zwischenschritt signalisieren (außer dem ersten — dort reicht
+            # der Initial-Status vom try-Block bzw. das Durchsuchen-Knowledge-Event).
+            if iteration > 0:
+                yield _status("Verarbeite die Ergebnisse…", "🧩")
             call_params = {
                 "model": model,
                 "messages": messages,
@@ -765,7 +814,8 @@ async def stream_chat_generator(data: ChatRequest):
                         tool_name = tc.function.name
                         tool_args = json.loads(tc.function.arguments)
                         log.info("Stream chat %d: Tool-Call → %s", data.chat_id, tool_name)
-                        skill_info = get_skill_label(tool_name)
+                        action = tool_args.get("action") if isinstance(tool_args, dict) else None
+                        skill_info = get_skill_label(tool_name, action)
 
                         # render_artifact: Gateway-intercepted (nicht an Laravel senden)
                         if tool_name == "render_artifact":
@@ -836,6 +886,8 @@ async def stream_chat_generator(data: ChatRequest):
                 break
 
             # Letzte Iteration oder keine Tools → Streaming!
+            # Kurzer semantischer Übergang bevor die ersten Tokens ankommen.
+            yield _status("Formuliere deine Antwort…", "✍️")
             call_params["stream"] = True
             call_params["stream_options"] = {"include_usage": True}
             stream_response = oai_client.chat.completions.create(**call_params)
