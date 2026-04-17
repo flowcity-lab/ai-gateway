@@ -2276,6 +2276,7 @@ class MemoryExtractionRequest(BaseModel):
     messages: list = []
     existing_memories: list = []
     callback_url: str = ""
+    model: str = ""  # Optional: Modell aus Laravel-Config (Fallback auf gpt-4o-mini)
 
 
 @app.post("/extract-memories")
@@ -2290,7 +2291,7 @@ async def extract_memories(request: Request, bg: BackgroundTasks):
 def memory_extraction_pipeline(data: MemoryExtractionRequest):
     """Extrahiert lernbare Fakten aus Chat-Verlauf via LLM."""
     try:
-        model = get_model_name("gpt-4o-mini")
+        model = get_model_name(data.model or "gpt-4o-mini")
 
         existing_str = "\n".join(f"- {m}" for m in data.existing_memories) if data.existing_memories else "Keine"
 
