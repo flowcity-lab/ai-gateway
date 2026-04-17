@@ -142,6 +142,11 @@ class ChatRequest(BaseModel):
     notebook_ids: list = []           # z.B. ["nb_1", "nb_3"]
     doc_processor_url: str = ""       # z.B. "https://trainer-doc-processor.ai-guide.at"
     doc_processor_secret: str = ""    # Bearer-Token für doc-processor
+    # RAG: Von Laravel vor-gesuchte & gemergte Chunks (Welle 3 Orchestrator).
+    # Wenn gesetzt (len > 0), überspringt der Gateway seine eigene search_documents()-Pipeline.
+    rag_prefetched_chunks: list = []  # [{text, filename, score, source, page_num?, marker?, has_image?, image_b64?}]
+    rag_summary: dict = None          # Metadata vom Orchestrator (intent, rewritten query, source stats)
+    rag_citations: list = []          # [{marker, source_type, source_label, filename, notebook_id, page_num, score}]
     # Trainer-Branding (Farben, Logo als Base64)
     trainer_branding: dict = None     # {"company_name", "primary_color", "logo_base64", ...}
 
@@ -718,9 +723,9 @@ async def stream_chat_generator(data: ChatRequest):
     artifacts = []  # Gesammelte render_artifact Ergebnisse
 
     try:
-        # RAG
-        rag_context = []
-        if data.notebook_ids and data.doc_processor_url:
+        # RAG: Laravel-Orchestrator hat Vorrang, sonst fällt auf eigene Suche zurück.
+        rag_context = list(data.rag_prefetched_chunks or [])
+        if not rag_context and data.notebook_ids and data.doc_processor_url:
             rag_context = search_documents(
                 query=data.message,
                 notebook_ids=data.notebook_ids,
@@ -874,6 +879,11 @@ async def stream_chat_generator(data: ChatRequest):
             }
             if artifacts:
                 callback_data["artifacts"] = artifacts
+            # RAG-Metadaten aus dem Laravel-Orchestrator zurückreichen
+            if data.rag_citations:
+                callback_data["rag_citations"] = data.rag_citations
+            if data.rag_summary:
+                callback_data["rag_summary"] = data.rag_summary
             send_callback(callback_url, callback_data)
 
     except Exception as e:
@@ -902,9 +912,11 @@ def chat_pipeline_sync(data: ChatRequest) -> dict:
     start_time = time.time()
     try:
         # RAG: Dokumente suchen wenn Notebooks verknüpft sind
-        rag_context = []
-        if data.notebook_ids and data.doc_processor_url:
-            log.info("Chat %d [sync]: RAG-Suche in %d Notebooks", data.chat_id, len(data.notebook_ids))
+        rag_context = list(data.rag_prefetched_chunks or [])
+        if rag_context:
+            log.info("Chat %d [sync]: %d prefetched RAG-Chunks vom Orchestrator", data.chat_id, len(rag_context))
+        elif data.notebook_ids and data.doc_processor_url:
+            log.info("Chat %d [sync]: RAG-Suche in %d Notebooks (Gateway-Fallback)", data.chat_id, len(data.notebook_ids))
             rag_context = search_documents(
                 query=data.message,
                 notebook_ids=data.notebook_ids,
@@ -1022,6 +1034,12 @@ def chat_pipeline_sync(data: ChatRequest) -> dict:
             "tool_results": all_tool_results or None,
         }
 
+        # RAG-Metadaten aus dem Laravel-Orchestrator zurückreichen
+        if data.rag_citations:
+            resp["rag_citations"] = data.rag_citations
+        if data.rag_summary:
+            resp["rag_summary"] = data.rag_summary
+
         if pending_images:
             resp["pending_images"] = pending_images
             log.info("Chat %d [sync]: %d Bilder in Response (pending_images)",
@@ -1064,10 +1082,12 @@ def chat_pipeline(data: ChatRequest):
     """
     start_time = time.time()
     try:
-        # 0. RAG: Dokumente suchen wenn Notebooks verknüpft sind
-        rag_context = []
-        if data.notebook_ids and data.doc_processor_url:
-            log.info("Chat %d: RAG-Suche in %d Notebooks", data.chat_id, len(data.notebook_ids))
+        # 0. RAG: Laravel-Orchestrator hat Vorrang, Gateway-Fallback nur wenn leer
+        rag_context = list(data.rag_prefetched_chunks or [])
+        if rag_context:
+            log.info("Chat %d: %d prefetched RAG-Chunks vom Orchestrator", data.chat_id, len(rag_context))
+        elif data.notebook_ids and data.doc_processor_url:
+            log.info("Chat %d: RAG-Suche in %d Notebooks (Gateway-Fallback)", data.chat_id, len(data.notebook_ids))
             rag_context = search_documents(
                 query=data.message,
                 notebook_ids=data.notebook_ids,
@@ -1182,6 +1202,11 @@ def chat_pipeline(data: ChatRequest):
                 callback_data["artifacts"] = artifacts
             if pending_rag_images:
                 callback_data["rag_images"] = pending_rag_images
+            # RAG-Metadaten aus dem Laravel-Orchestrator zurückreichen
+            if data.rag_citations:
+                callback_data["rag_citations"] = data.rag_citations
+            if data.rag_summary:
+                callback_data["rag_summary"] = data.rag_summary
             send_callback(callback_url, callback_data)
 
     except Exception as e:
@@ -1256,21 +1281,29 @@ def build_messages(data: ChatRequest, rag_context: list = None) -> list:
             f"\n\n## Bekannte Informationen über den Trainer:\n{memory_text}"
         )
 
-    # RAG-Kontext injizieren
+    # RAG-Kontext injizieren.
+    # Bei prefetched Chunks aus dem Laravel-Orchestrator ist jeder Chunk bereits mit einem
+    # eindeutigen Marker + Source-Label versehen. Fallback für Gateway-Eigensuche: Index + Filename.
     if rag_context:
         context_parts = []
         for i, chunk in enumerate(rag_context, 1):
+            marker = chunk.get("marker") or i
+            pre_label = chunk.get("source")  # z.B. "[3] Mein Wissen · konzept.pdf"
             source = chunk.get("filename", "Unbekannt")
             text = chunk.get("text", "")
             score = chunk.get("score", 0)
             page = chunk.get("page_num")
-            label = f"Quelle {i}: {source}" + (f" (Seite {page})" if page else "") + f" (Relevanz: {score:.2f})"
-            context_parts.append(f"[{label}]\n{text}")
+            if pre_label:
+                label = pre_label + (f" · Seite {page}" if page else "") + f" · Relevanz {score:.2f}"
+            else:
+                label = f"[{marker}] {source}" + (f" · Seite {page}" if page else "") + f" · Relevanz {score:.2f}"
+            context_parts.append(f"{label}\n{text}")
         context_block = "\n\n".join(context_parts)
         system_parts.append(
             f"\n\n## Relevanter Kontext aus Dokumenten:\n"
             f"Nutze die folgenden Informationen aus den Wissensdatenbanken des Trainers, "
-            f"um die Frage zu beantworten. Verweise auf die Quellen wenn möglich.\n\n"
+            f"um die Frage zu beantworten. Zitiere Quellen im Antworttext als `[Quelle N]` "
+            f"(z.B. `[Quelle 3]`) passend zum jeweils vorangestellten Marker.\n\n"
             f"{context_block}"
         )
 
@@ -2311,6 +2344,12 @@ def memory_extraction_pipeline(data: MemoryExtractionRequest):
 
         log.info("Memory-Extraktion Chat %d: %d neue Memories", data.chat_id, len(memories))
 
+        # Token-Verbrauch aus der Response ziehen (für Battery-Tracking in Laravel)
+        usage = {
+            "input_tokens": getattr(response.usage, "prompt_tokens", 0) if getattr(response, "usage", None) else 0,
+            "output_tokens": getattr(response.usage, "completion_tokens", 0) if getattr(response, "usage", None) else 0,
+        }
+
         # Callback an Laravel
         callback_url = data.callback_url
         if callback_url:
@@ -2318,6 +2357,8 @@ def memory_extraction_pipeline(data: MemoryExtractionRequest):
                 "chat_id": data.chat_id,
                 "user_id": data.user_id,
                 "memories": memories,
+                "usage": usage,
+                "model": model,
             })
 
     except Exception as e:
