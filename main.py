@@ -756,8 +756,8 @@ async def stream_chat(token: str):
 
 
 async def stream_chat_generator(data: ChatRequest):
-    """Generator der SSE-Events yieldet. Führt Tool-Calls synchron aus,
-    streamt nur die finale Text-Antwort."""
+    """Generator der SSE-Events yieldet. Streamt jeden Token live und
+    behandelt Tool-Calls als Delta-Stream (OpenAI native function-call streaming)."""
     start_time = time.time()
     full_content = ""
     usage = {"input_tokens": 0, "output_tokens": 0}
@@ -790,130 +790,141 @@ async def stream_chat_generator(data: ChatRequest):
         tools = build_tools(data.tool_definitions, data.skills)
         max_iterations = 5
 
-        # Tool-Call-Loop (nicht-gestreamt — nur finale Antwort wird gestreamt)
+        # Streaming-Loop: Jede Iteration streamt die Antwort live.
+        # Erkennt GPT einen Tool-Call, werden dessen Argument-Deltas gesammelt,
+        # der Tool-Call ausgeführt, und die nächste Iteration holt die Folge-Antwort.
         for iteration in range(max_iterations):
-            # Vor jedem Modell-Aufruf Zwischenschritt signalisieren (außer dem ersten — dort reicht
-            # der Initial-Status vom try-Block bzw. das Durchsuchen-Knowledge-Event).
             if iteration > 0:
                 yield _status("Verarbeite die Ergebnisse…", "🧩")
+
+            is_last_iteration = iteration >= max_iterations - 1
             call_params = {
                 "model": model,
                 "messages": messages,
                 "temperature": data.temperature,
                 "max_tokens": data.max_tokens,
+                "stream": True,
+                "stream_options": {"include_usage": True},
             }
-
-            is_last_iteration = iteration >= max_iterations - 1
-            has_tools = tools and not is_last_iteration
-
-            if has_tools:
+            if tools and not is_last_iteration:
                 call_params["tools"] = tools
                 call_params["tool_choice"] = "auto"
 
-            # Prüfen ob wir Tool-Calls erwarten — wenn ja, nicht streamen
-            if has_tools:
-                response = await oai_async_client.chat.completions.create(**call_params)
-                choice = response.choices[0]
-
-                if choice.message.tool_calls:
-                    # Tool-Calls verarbeiten
-                    messages.append(choice.message)
-                    for tc in choice.message.tool_calls:
-                        tool_name = tc.function.name
-                        tool_args = json.loads(tc.function.arguments)
-                        log.info("Stream chat %d: Tool-Call → %s", data.chat_id, tool_name)
-                        action = tool_args.get("action") if isinstance(tool_args, dict) else None
-                        skill_info = get_skill_label(tool_name, action)
-
-                        # render_artifact: Gateway-intercepted (nicht an Laravel senden)
-                        if tool_name == "render_artifact":
-                            artifact_title = tool_args.get("title", "Visualisierung")
-                            artifact_html = inject_artifact_css(tool_args.get("html", ""), data.trainer_branding)
-                            artifact_data = {"title": artifact_title, "html": artifact_html}
-                            artifacts.append(artifact_data)
-                            log.info("Stream chat %d: Artifact '%s' (%d bytes HTML)", data.chat_id, artifact_title, len(artifact_html))
-
-                            # SSE artifact Event an Frontend senden
-                            yield f"event: artifact\ndata: {json.dumps(artifact_data, ensure_ascii=False)}\n\n"
-
-                            # Erfolg an GPT zurückmelden (damit GPT weitermachen kann)
-                            all_tool_calls.append({"id": tc.id, "name": tool_name, "arguments": tool_args})
-                            messages.append({
-                                "role": "tool",
-                                "tool_call_id": tc.id,
-                                "content": json.dumps({"success": True, "rendered": True, "title": artifact_title}, ensure_ascii=False),
-                            })
-                            continue
-
-                        # Delegation: eigene Start/End Events
-                        is_delegation = tool_name == "delegate_to_assistant"
-                        target_name = tool_args.get("target_assistant", "") if is_delegation else ""
-
-                        if is_delegation:
-                            yield f"event: delegation_start\ndata: {json.dumps({'tool': tool_name, 'label': skill_info['label'], 'icon': skill_info['icon'], 'target': target_name})}\n\n"
-                        else:
-                            yield f"event: tool_start\ndata: {json.dumps({'tool': tool_name, 'label': skill_info['label'], 'icon': skill_info['icon']})}\n\n"
-
-                        all_tool_calls.append({"id": tc.id, "name": tool_name, "arguments": tool_args})
-                        result = await asyncio.to_thread(execute_skill, tool_name, tool_args, data.user_id, data.chat_id)
-                        all_tool_results.append({"tool_call_id": tc.id, "name": tool_name, "result": result})
-                        skill_success = "error" not in result
-
-                        if is_delegation:
-                            delegate_name = result.get("assistant_name", target_name)
-                            yield f"event: delegation_end\ndata: {json.dumps({'tool': tool_name, 'label': delegate_name, 'success': skill_success})}\n\n"
-                        else:
-                            yield f"event: tool_end\ndata: {json.dumps({'tool': tool_name, 'label': skill_info['label'], 'icon': skill_info['icon'], 'success': skill_success})}\n\n"
-
-                        # Base64-Daten entfernen bevor sie an GPT gehen (zu groß)
-                        result.pop("_image_b64", None)
-                        result.pop("_pdf_b64", None)
-
-                        messages.append({
-                            "role": "tool",
-                            "tool_call_id": tc.id,
-                            "content": json.dumps(result, ensure_ascii=False),
-                        })
-
-                    # Usage akkumulieren
-                    if response.usage:
-                        usage["input_tokens"] += response.usage.prompt_tokens
-                        usage["output_tokens"] += response.usage.completion_tokens
-                    continue
-
-                # Kein Tool-Call aber auch nicht gestreamt — Content extrahieren
-                full_content = choice.message.content or ""
-                if response.usage:
-                    usage["input_tokens"] += response.usage.prompt_tokens
-                    usage["output_tokens"] += response.usage.completion_tokens
-
-                # Content auf einmal als Tokens senden
-                for i in range(0, len(full_content), 4):
-                    chunk = full_content[i:i+4]
-                    yield f"data: {json.dumps({'token': chunk})}\n\n"
-                break
-
-            # Letzte Iteration oder keine Tools → Streaming!
-            # Kurzer semantischer Übergang bevor die ersten Tokens ankommen.
-            yield _status("Formuliere deine Antwort…", "✍️")
-            call_params["stream"] = True
-            call_params["stream_options"] = {"include_usage": True}
             stream_response = await oai_async_client.chat.completions.create(**call_params)
+
+            # Delta-Assembly pro Iteration
+            tool_calls_buffer: dict = {}  # index -> {id, name, arguments}
+            iteration_content = ""
+            finish_reason = None
 
             async for chunk in stream_response:
                 if not chunk.choices:
-                    # Usage kommt im letzten Chunk
                     if chunk.usage:
                         usage["input_tokens"] += chunk.usage.prompt_tokens
                         usage["output_tokens"] += chunk.usage.completion_tokens
                     continue
 
-                delta = chunk.choices[0].delta
+                choice = chunk.choices[0]
+                delta = choice.delta
+
                 if delta and delta.content:
-                    full_content += delta.content
+                    iteration_content += delta.content
                     yield f"data: {json.dumps({'token': delta.content})}\n\n"
 
-            break  # Nach Streaming sind wir fertig
+                if delta and delta.tool_calls:
+                    for tc_delta in delta.tool_calls:
+                        idx = tc_delta.index
+                        buf = tool_calls_buffer.setdefault(idx, {"id": "", "name": "", "arguments": ""})
+                        if tc_delta.id:
+                            buf["id"] = tc_delta.id
+                        if tc_delta.function and tc_delta.function.name:
+                            buf["name"] = tc_delta.function.name
+                        if tc_delta.function and tc_delta.function.arguments:
+                            buf["arguments"] += tc_delta.function.arguments
+
+                if choice.finish_reason:
+                    finish_reason = choice.finish_reason
+
+            # Nach dem Stream: Tool-Calls ausführen oder Iteration beenden.
+            if finish_reason == "tool_calls" and tool_calls_buffer:
+                # Assistant-Message mit Tool-Calls in History einfügen
+                assistant_tool_calls = []
+                for idx in sorted(tool_calls_buffer.keys()):
+                    buf = tool_calls_buffer[idx]
+                    assistant_tool_calls.append({
+                        "id": buf["id"],
+                        "type": "function",
+                        "function": {"name": buf["name"], "arguments": buf["arguments"] or "{}"},
+                    })
+                messages.append({
+                    "role": "assistant",
+                    "content": iteration_content or None,
+                    "tool_calls": assistant_tool_calls,
+                })
+
+                for idx in sorted(tool_calls_buffer.keys()):
+                    buf = tool_calls_buffer[idx]
+                    tool_name = buf["name"]
+                    try:
+                        tool_args = json.loads(buf["arguments"] or "{}")
+                    except json.JSONDecodeError:
+                        tool_args = {}
+                    log.info("Stream chat %d: Tool-Call → %s", data.chat_id, tool_name)
+                    action = tool_args.get("action") if isinstance(tool_args, dict) else None
+                    skill_info = get_skill_label(tool_name, action)
+
+                    # render_artifact: Gateway-intercepted (nicht an Laravel senden)
+                    if tool_name == "render_artifact":
+                        artifact_title = tool_args.get("title", "Visualisierung")
+                        artifact_html = inject_artifact_css(tool_args.get("html", ""), data.trainer_branding)
+                        artifact_data = {"title": artifact_title, "html": artifact_html}
+                        artifacts.append(artifact_data)
+                        log.info("Stream chat %d: Artifact '%s' (%d bytes HTML)", data.chat_id, artifact_title, len(artifact_html))
+
+                        yield f"event: artifact\ndata: {json.dumps(artifact_data, ensure_ascii=False)}\n\n"
+
+                        all_tool_calls.append({"id": buf["id"], "name": tool_name, "arguments": tool_args})
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": buf["id"],
+                            "content": json.dumps({"success": True, "rendered": True, "title": artifact_title}, ensure_ascii=False),
+                        })
+                        continue
+
+                    is_delegation = tool_name == "delegate_to_assistant"
+                    target_name = tool_args.get("target_assistant", "") if is_delegation else ""
+
+                    if is_delegation:
+                        yield f"event: delegation_start\ndata: {json.dumps({'tool': tool_name, 'label': skill_info['label'], 'icon': skill_info['icon'], 'target': target_name})}\n\n"
+                    else:
+                        yield f"event: tool_start\ndata: {json.dumps({'tool': tool_name, 'label': skill_info['label'], 'icon': skill_info['icon']})}\n\n"
+
+                    all_tool_calls.append({"id": buf["id"], "name": tool_name, "arguments": tool_args})
+                    result = await asyncio.to_thread(execute_skill, tool_name, tool_args, data.user_id, data.chat_id)
+                    all_tool_results.append({"tool_call_id": buf["id"], "name": tool_name, "result": result})
+                    skill_success = "error" not in result
+
+                    if is_delegation:
+                        delegate_name = result.get("assistant_name", target_name)
+                        yield f"event: delegation_end\ndata: {json.dumps({'tool': tool_name, 'label': delegate_name, 'success': skill_success})}\n\n"
+                    else:
+                        yield f"event: tool_end\ndata: {json.dumps({'tool': tool_name, 'label': skill_info['label'], 'icon': skill_info['icon'], 'success': skill_success})}\n\n"
+
+                    # Base64-Daten entfernen bevor sie an GPT gehen (zu groß)
+                    result.pop("_image_b64", None)
+                    result.pop("_pdf_b64", None)
+
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": buf["id"],
+                        "content": json.dumps(result, ensure_ascii=False),
+                    })
+
+                continue  # nächste Iteration → Folge-Antwort streamen
+
+            # Kein Tool-Call → Antwort komplett, fertig.
+            full_content += iteration_content
+            break
 
         duration_ms = int((time.time() - start_time) * 1000)
 
