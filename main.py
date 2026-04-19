@@ -17,13 +17,14 @@ from typing import Optional
 import httpx
 import openai
 import requests as _requests
-from fastapi import FastAPI, Request, HTTPException, BackgroundTasks
-from fastapi.responses import StreamingResponse
+from fastapi import FastAPI, Request, HTTPException, BackgroundTasks, UploadFile, File, Form
+from fastapi.responses import StreamingResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from import_parser import router as import_parser_router, _cleanup_loop as import_cleanup_loop
 from enrichment import router as enrichment_router
+from stream_utils import accumulate_tool_call_delta, build_assistant_tool_calls
 
 # ── Konfiguration (Umgebungsvariablen) ────────────────────────────────
 
@@ -698,6 +699,112 @@ async def chat(request: Request, bg: BackgroundTasks):
     return {"status": "accepted", "chat_id": data.chat_id}
 
 
+# ── Audio-Transkription (Chat Voice-Input) ───────────────────────────
+
+@app.post("/chat/transcribe")
+async def chat_transcribe(
+    request: Request,
+    audio: UploadFile = File(...),
+    language: Optional[str] = Form(None),
+    model: str = Form("whisper-1"),
+):
+    """
+    Speech-to-Text für Chat-Voice-Input. Synchron, kein Callback.
+    Audio wird direkt an OpenAI Whisper gereicht und nach der Antwort verworfen.
+    """
+    verify_auth(request)
+
+    if not OPENAI_API_KEY:
+        raise HTTPException(500, "OPENAI_API_KEY not configured")
+
+    data = await audio.read()
+    if not data:
+        raise HTTPException(400, "Empty audio payload")
+
+    # OpenAI Whisper erwartet (filename, bytes, content_type)
+    filename = audio.filename or "voice.webm"
+    content_type = audio.content_type or "audio/webm"
+
+    kwargs = {
+        "model": model or "whisper-1",
+        "file": (filename, data, content_type),
+        "response_format": "verbose_json",
+    }
+    if language:
+        kwargs["language"] = language
+
+    try:
+        client = get_openai_client()
+        resp = client.audio.transcriptions.create(**kwargs)
+    except Exception as e:
+        log.exception("Whisper transcription failed")
+        raise HTTPException(502, f"Transcription failed: {e}")
+
+    text = getattr(resp, "text", "") or ""
+    duration = float(getattr(resp, "duration", 0.0) or 0.0)
+
+    return {
+        "text": text,
+        "duration_seconds": duration,
+        "model": kwargs["model"],
+    }
+
+
+# ── Text-to-Speech (Chat Vorlesen) ───────────────────────────────────
+
+class ChatTtsRequest(BaseModel):
+    text: str
+    voice: str = "alloy"
+    model: str = "tts-1"
+
+
+@app.post("/chat/tts")
+async def chat_tts(request: Request, body: ChatTtsRequest):
+    """
+    Text-to-Speech für Chat-Antworten. Synchron, streamt audio/mpeg binary zurück.
+    OpenAI-Limit: 4096 Zeichen pro Request (Laravel-Seite schneidet ab).
+    """
+    verify_auth(request)
+
+    if not OPENAI_API_KEY:
+        raise HTTPException(500, "OPENAI_API_KEY not configured")
+
+    text = (body.text or "").strip()
+    if not text:
+        raise HTTPException(400, "Empty text")
+    if len(text) > 4096:
+        text = text[:4096]
+
+    allowed_voices = {"alloy", "echo", "fable", "onyx", "nova", "shimmer"}
+    voice = body.voice if body.voice in allowed_voices else "alloy"
+
+    allowed_models = {"tts-1", "tts-1-hd"}
+    model = body.model if body.model in allowed_models else "tts-1"
+
+    try:
+        client = get_openai_client()
+        resp = client.audio.speech.create(
+            model=model,
+            voice=voice,
+            input=text,
+            response_format="mp3",
+        )
+        audio_bytes = resp.read() if hasattr(resp, "read") else resp.content
+    except Exception as e:
+        log.exception("OpenAI TTS failed")
+        raise HTTPException(502, f"TTS failed: {e}")
+
+    return Response(
+        content=audio_bytes,
+        media_type="audio/mpeg",
+        headers={
+            "X-TTS-Model": model,
+            "X-TTS-Voice": voice,
+            "X-TTS-Characters": str(len(text)),
+        },
+    )
+
+
 # ── SSE Streaming ────────────────────────────────────────────────────
 
 @app.post("/chat/stream/init")
@@ -833,14 +940,7 @@ async def stream_chat_generator(data: ChatRequest):
 
                 if delta and delta.tool_calls:
                     for tc_delta in delta.tool_calls:
-                        idx = tc_delta.index
-                        buf = tool_calls_buffer.setdefault(idx, {"id": "", "name": "", "arguments": ""})
-                        if tc_delta.id:
-                            buf["id"] = tc_delta.id
-                        if tc_delta.function and tc_delta.function.name:
-                            buf["name"] = tc_delta.function.name
-                        if tc_delta.function and tc_delta.function.arguments:
-                            buf["arguments"] += tc_delta.function.arguments
+                        accumulate_tool_call_delta(tool_calls_buffer, tc_delta)
 
                 if choice.finish_reason:
                     finish_reason = choice.finish_reason
@@ -848,18 +948,10 @@ async def stream_chat_generator(data: ChatRequest):
             # Nach dem Stream: Tool-Calls ausführen oder Iteration beenden.
             if finish_reason == "tool_calls" and tool_calls_buffer:
                 # Assistant-Message mit Tool-Calls in History einfügen
-                assistant_tool_calls = []
-                for idx in sorted(tool_calls_buffer.keys()):
-                    buf = tool_calls_buffer[idx]
-                    assistant_tool_calls.append({
-                        "id": buf["id"],
-                        "type": "function",
-                        "function": {"name": buf["name"], "arguments": buf["arguments"] or "{}"},
-                    })
                 messages.append({
                     "role": "assistant",
                     "content": iteration_content or None,
-                    "tool_calls": assistant_tool_calls,
+                    "tool_calls": build_assistant_tool_calls(tool_calls_buffer),
                 })
 
                 for idx in sorted(tool_calls_buffer.keys()):
