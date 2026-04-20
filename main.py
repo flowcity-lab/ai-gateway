@@ -134,6 +134,7 @@ class ChatRequest(BaseModel):
     user_id: int
     assistant_id: int
     chat_id: int
+    user_message_id: Optional[int] = None  # Eindeutige Zuordnung Assistant-Antwort → User-Message (Parent)
     message: str
     system_prompt: str = ""
     model: str = "gpt-4o"
@@ -1033,6 +1034,7 @@ async def stream_chat_generator(data: ChatRequest):
         if callback_url:
             callback_data = {
                 "chat_id": data.chat_id,
+                "user_message_id": data.user_message_id,
                 "content": full_content,
                 "usage": usage,
                 "model": model,
@@ -1058,6 +1060,7 @@ async def stream_chat_generator(data: ChatRequest):
         if callback_url:
             await asyncio.to_thread(send_callback, callback_url, {
                 "chat_id": data.chat_id,
+                "user_message_id": data.user_message_id,
                 "content": f"Fehler bei der Verarbeitung: {str(e)}",
                 "usage": {"input_tokens": 0, "output_tokens": 0},
                 "model": data.model,
@@ -1354,6 +1357,7 @@ def chat_pipeline(data: ChatRequest):
         if callback_url:
             callback_data = {
                 "chat_id": data.chat_id,
+                "user_message_id": data.user_message_id,
                 "content": content,
                 "usage": usage,
                 "model": model,
@@ -1379,6 +1383,7 @@ def chat_pipeline(data: ChatRequest):
         if callback_url:
             send_callback(callback_url, {
                 "chat_id": data.chat_id,
+                "user_message_id": data.user_message_id,
                 "content": f"Fehler bei der Verarbeitung: {str(e)}",
                 "usage": {"input_tokens": 0, "output_tokens": 0},
                 "model": data.model,
