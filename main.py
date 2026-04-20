@@ -2461,7 +2461,14 @@ def memory_extraction_pipeline(data: MemoryExtractionRequest):
     try:
         model = get_model_name(data.model or "gpt-4o-mini")
 
-        existing_str = "\n".join(f"- {m}" for m in data.existing_memories) if data.existing_memories else "Keine"
+        # existing_memories kann entweder Strings (Legacy) oder Dicts {category, content} sein.
+        def _fmt_existing(m):
+            if isinstance(m, dict):
+                cat = m.get("category", "?")
+                return f"- [{cat}] {m.get('content', '')}"
+            return f"- {m}"
+
+        existing_str = "\n".join(_fmt_existing(m) for m in data.existing_memories) if data.existing_memories else "Keine"
 
         conversation = "\n".join(
             f"{m['role'].upper()}: {m['content']}" for m in data.messages
@@ -2472,16 +2479,28 @@ def memory_extraction_pipeline(data: MemoryExtractionRequest):
                 "Du bist ein Memory-Extraktions-Assistent. Analysiere den Chat-Verlauf "
                 "und extrahiere wichtige Fakten über den Trainer, die für zukünftige "
                 "Gespräche nützlich sein könnten.\n\n"
-                "Bereits bekannte Fakten (nicht duplizieren):\n"
+                "Bereits bekannte Fakten (nicht duplizieren, Kategorie beachten):\n"
                 f"{existing_str}\n\n"
                 "Antworte als JSON-Array mit Objekten: "
-                '[{"category": "...", "content": "...", "confidence": 0.0-1.0}]\n'
-                "Kategorien:\n"
-                "- style: Kommunikationsstil, Tonalität (z.B. 'duzt Kunden', 'formell bei Erstansprache')\n"
-                "- preference: Vorlieben und Präferenzen (z.B. 'Bevorzugt kurze E-Mails')\n"
-                "- fact: Allgemeine Fakten über den Trainer (z.B. 'Spezialisiert auf Outdoor-Training')\n"
-                "- business: Geschäftliche Infos (z.B. 'Firma: TrainerPro GmbH, 5 Mitarbeiter')\n"
-                "- audience: Zielgruppen-Infos (z.B. 'Zielgruppe: Führungskräfte 35-55')\n\n"
+                '[{"category": "...", "content": "...", "confidence": 0.0-1.0}]\n\n'
+                "KATEGORIEN:\n"
+                "- fact: objektive Fakten (Wohnort, Name, Familie, Alter, Sprachen, Region)\n"
+                "- style: Kommunikationsstil, Anrede, Tonalität (z.B. 'duzt Kunden', 'formell bei Erstansprache')\n"
+                "- preference: Vorlieben (bevorzugter Kanal, Zeitpunkt, Format, Länge von Mails)\n"
+                "- business: Geschäftliche Infos (Firma, Rolle, Angebote, Preise, Mitarbeiterzahl)\n"
+                "- audience: Zielgruppe des Trainers (z.B. 'Führungskräfte 35-55', 'KMU-Inhaber')\n"
+                "- knowledge: Expertisethemen des Trainers (z.B. 'Outdoor-Training', 'Resilienz')\n\n"
+                "BEISPIELE:\n"
+                '- "Ich wohne in Linz" → {"category": "fact", "content": "Wohnt in Linz", "confidence": 0.95}\n'
+                '- "Duz mich immer" → {"category": "style", "content": "Bevorzugt Du-Ansprache", "confidence": 0.95}\n'
+                '- "Meine Mails sollen kurz sein" → {"category": "preference", "content": "Bevorzugt kurze E-Mails", "confidence": 0.9}\n'
+                '- "Ich coache Führungskräfte" → {"category": "audience", "content": "Zielgruppe: Führungskräfte", "confidence": 0.9}\n'
+                '- "Meine Firma heißt Acme GmbH" → {"category": "business", "content": "Firma: Acme GmbH", "confidence": 0.95}\n'
+                '- "Ich bin Resilienz-Experte" → {"category": "knowledge", "content": "Expertise: Resilienz", "confidence": 0.9}\n\n'
+                "WICHTIG zur Kategorie-Kohärenz:\n"
+                "- Wenn ein neuer Fakt einem bereits bekannten ähnelt, verwende exakt dieselbe Kategorie wie "
+                "  in der Liste 'Bereits bekannte Fakten'. Wechsle die Kategorie nur, wenn sie klar falsch war.\n"
+                "- Grenze style ↔ preference: Wie der Trainer spricht (Anrede, Ton) = style; WAS er bevorzugt (Kanal, Länge) = preference.\n\n"
                 "Nur Fakten mit confidence >= 0.6 extrahieren. "
                 "Leeres Array [] wenn keine neuen Fakten."
             )},
