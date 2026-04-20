@@ -626,11 +626,11 @@ Du hast das Tool `render_artifact` mit dem du **kreative, interaktive HTML/CSS/J
 3. **Hintergrund TRANSPARENT** — fügt sich nahtlos in den Chat ein. Dark-Mode automatisch.
 4. **Branding-Farben** `var(--primary)`, `var(--secondary)`, `var(--accent)` werden automatisch injiziert — nutze sie!
 5. **Erstelle ein Artifact** wenn etwas visuell/interaktiv besser wirkt als Text. NICHT für simple Kurzantworten.
-6. **KEINE Phantom-UI** — Erwähne Buttons, Karten, "Klick hier"-Elemente oder ähnliches NUR wenn du sie im selben Turn per `render_artifact` tatsächlich erzeugst. Für einfache Navigation in Text-Antworten ausschließlich Markdown-Links verwenden: `[Alle Kontakte ansehen](/crm/contacts)`.
+6. **KEINE Phantom-UI** — Erwähne Buttons, Karten, "Klick hier"-Elemente oder ähnliches NUR wenn du sie im selben Turn per `render_artifact` tatsächlich erzeugst. Für einfache Navigation in Text-Antworten ausschließlich Markdown-Links verwenden: `[Alle Kontakte ansehen](/contacts)`.
 
 ### Kurzantworten mit Navigation (ohne Artifact)
 Für einzelne Zahlen, Zählungen, Status-Auskünfte oder sehr kurze Antworten, die KEIN Artifact rechtfertigen: antworte in 1–2 Sätzen und füge ggf. einen Markdown-Link zur passenden Übersicht an.
-Beispiel-Ton: "Du hast aktuell **237 Kontakte**. → [Alle ansehen](/crm/contacts)"
+Beispiel-Ton: "Du hast aktuell **237 Kontakte**. → [Alle ansehen](/contacts)"
 
 ### 🎨 Kreative Freiheit — SO sollst du arbeiten:
 - Schreibe **eigenes `<style>`** für einzigartige, zum Thema passende Designs
@@ -671,7 +671,7 @@ Beispiel-Ton: "Du hast aktuell **237 Kontakte**. → [Alle ansehen](/crm/contact
 
 ### Technische Hinweise:
 - Starte HTML mit `<meta charset="utf-8">`
-- CRM-Links: `<a href="/crm/contacts/{id}" target="_top">`
+- CRM-Links: `<a href="/contacts/{id}" target="_top">` für Kontakte, `<a href="/deals/{id}" target="_top">` für Deals
 - Nutze `var(--primary)`, `var(--accent)`, `var(--gradient)` für Branding-konsistente Farben
 - `.animate-in` mit `.animate-in-1` bis `-7` auf sichtbaren Elementen für elegante Lade-Animationen
 """
@@ -1843,9 +1843,9 @@ SKILL_ARTIFACT_HINTS = {
     "crm_query": (
         "Rendering-Regel für dieses Ergebnis:\n"
         "- Wenn rows[] mindestens 3 konkrete Datensätze enthält: rufe render_artifact auf und stelle die Daten als interaktive HTML-Tabelle oder Karten-Grid dar. "
-        "Links zu Kontakten: /crm/contacts/{id}, zu Deals: /crm/deals/{id}, jeweils mit target=\"_top\".\n"
+        "Links zu Kontakten: /contacts/{id}, zu Deals: /deals/{id}, jeweils mit target=\"_top\".\n"
         "- Wenn nur aggregate.value zurückkommt oder rows[] weniger als 3 Einträge hat: KEIN Artifact rendern. "
-        "Antworte stattdessen in 1–2 Sätzen im Chat-Text mit einem Markdown-Link zur Übersicht (z.B. `[Alle ansehen](/crm/contacts)` bzw. `/crm/deals`).\n"
+        "Antworte stattdessen in 1–2 Sätzen im Chat-Text mit einem Markdown-Link zur Übersicht (z.B. `[Alle ansehen](/contacts)` bzw. `/deals`).\n"
         "- NIEMALS Buttons, Karten oder \"Klick hier\"-Elemente im Text beschreiben, ohne sie per render_artifact tatsächlich zu erzeugen."
     ),
 }
