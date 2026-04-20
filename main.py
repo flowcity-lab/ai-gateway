@@ -46,6 +46,17 @@ GOOGLE_REGION              = os.environ.get("GOOGLE_REGION", "us-central1")
 # Laravel Callback-URLs (vom Gateway an Laravel)
 LARAVEL_CALLBACK_URL = os.environ.get("LARAVEL_CALLBACK_URL", "")
 LARAVEL_SKILL_URL = os.environ.get("LARAVEL_SKILL_URL", "")
+LARAVEL_CHAT_CONFIRM_URL = os.environ.get("LARAVEL_CHAT_CONFIRM_URL", "")
+
+# Skills, die vor der Ausführung eine Benutzer-Bestätigung erfordern (Skill-System v2).
+# Der Stream pausiert hier, Laravel persistiert den Pending-State, das Frontend zeigt
+# die Inline-Bestätigungskarte. Nach Approve/Reject kehrt die Pipeline per /chat/resume zurück.
+CONFIRMATION_REQUIRED_SKILLS = {
+    "crm_contact_write",
+    "crm_deal_write",
+    "followup_write",
+    "mail_send",
+}
 
 # Logging
 logging.basicConfig(level=logging.INFO)
@@ -115,6 +126,13 @@ app.include_router(enrichment_router)
 stream_tokens: dict = {}
 STREAM_TOKEN_TTL = 120  # Sekunden bis Token verfällt
 
+# ── Pending-Chat-State Store (für Confirmation-Pause, in-memory) ─────
+# resume_token → {data, messages, model, usage, all_tool_calls, all_tool_results,
+#                 artifacts, full_content, tool_call_id, created_at}
+# TTL muss mindestens so lang sein wie die Laravel-seitige Pending-Expiry (Default 1h).
+pending_chat_states: dict = {}
+PENDING_CHAT_TTL = 3600  # 1 Stunde
+
 
 # ── Auth ──────────────────────────────────────────────────────────────
 
@@ -164,13 +182,6 @@ class ChatRequest(BaseModel):
 # Warm, ich-sprechend formuliert — der Nutzer soll spüren, dass die KI für ihn arbeitet.
 
 SKILL_LABELS = {
-    # CRM (konsolidierte Themen-Skills seit Welle 2)
-    "crm_contacts":          {"label": "Schaue in deinen Kontakten nach…",    "icon": "👥"},
-    "crm_deals":             {"label": "Prüfe deine Deals…",                   "icon": "📊"},
-    "crm_tasks":             {"label": "Sehe deine Aufgaben durch…",           "icon": "✅"},
-    # Events & Kalender
-    "events":                {"label": "Schaue deine Veranstaltungen an…",     "icon": "🎟️"},
-    "calendar":              {"label": "Öffne deinen Kalender…",               "icon": "🗓️"},
     # Wissen & Erinnerungen
     "knowledge_search":      {"label": "Durchsuche dein Wissen…",              "icon": "📚"},
     "memory_manager":        {"label": "Arbeite mit deinen Erinnerungen…",     "icon": "🧠"},
@@ -185,24 +196,22 @@ SKILL_LABELS = {
     "ai_background_task":    {"label": "Starte eine Hintergrund-Aufgabe…",     "icon": "⚙️"},
     "delegate_to_assistant": {"label": "Frage einen Spezialisten…",            "icon": "🤝"},
     "render_artifact":       {"label": "Gestalte dir eine Visualisierung…",    "icon": "🪄"},
+    # Primitives (Skill-System v2)
+    "datetime":              {"label": "Schaue auf die Uhr…",                  "icon": "🕒"},
+    "web_search":            {"label": "Suche im Web für dich…",               "icon": "🌐"},
+    # Power-Query & Write (Skill-System v2)
+    "crm_query":             {"label": "Durchsuche dein CRM…",                 "icon": "🔎"},
+    "crm_contact_write":     {"label": "Ändere einen Kontakt…",                "icon": "✍️"},
+    "crm_deal_write":        {"label": "Ändere einen Deal…",                   "icon": "💼"},
+    "followup_write":        {"label": "Ändere eine Aufgabe…",                 "icon": "🔔"},
+    "mail_query":            {"label": "Durchsuche deine E-Mails…",            "icon": "📨"},
+    "mail_draft_create":     {"label": "Speichere einen E-Mail-Entwurf…",      "icon": "📝"},
+    "mail_send":             {"label": "Versende eine E-Mail…",                "icon": "✉️"},
 }
 
 # Action-spezifische Labels: feinere Sprache pro Skill+Action-Kombination.
 # Key-Format: f"{skill_name}:{action}". Fallback: SKILL_LABELS[skill_name].
 ACTION_LABELS = {
-    "crm_contacts:search":      {"label": "Suche in deinen Kontakten…",         "icon": "🔍"},
-    "crm_contacts:create":      {"label": "Lege den Kontakt für dich an…",      "icon": "👤"},
-    "crm_deals:search":         {"label": "Suche nach passenden Deals…",        "icon": "🔍"},
-    "crm_deals:create":         {"label": "Lege einen neuen Deal an…",          "icon": "📊"},
-    "crm_deals:update":         {"label": "Aktualisiere deinen Deal…",          "icon": "📊"},
-    "crm_tasks:search":         {"label": "Sehe deine offenen Aufgaben…",       "icon": "📋"},
-    "crm_tasks:create":         {"label": "Lege dir eine Aufgabe an…",          "icon": "➕"},
-    "crm_tasks:complete":       {"label": "Hake eine Aufgabe ab…",              "icon": "✅"},
-    "events:upcoming":          {"label": "Sehe deine nächsten Events…",         "icon": "📅"},
-    "events:past":              {"label": "Sehe deine vergangenen Events…",      "icon": "🕓"},
-    "events:find":              {"label": "Suche nach einer Veranstaltung…",     "icon": "🔍"},
-    "calendar:list":            {"label": "Sehe deine Termine…",                 "icon": "🗓️"},
-    "calendar:availability":    {"label": "Prüfe deine Verfügbarkeit…",          "icon": "⏱️"},
     "memory_manager:list":      {"label": "Schaue in deine Erinnerungen…",       "icon": "🧠"},
     "memory_manager:add":       {"label": "Merke mir etwas für dich…",           "icon": "📌"},
     "memory_manager:search":    {"label": "Suche in deinen Erinnerungen…",       "icon": "🔎"},
@@ -850,10 +859,11 @@ async def stream_chat(token: str):
         raise HTTPException(401, "Stream token expired")
 
     data: ChatRequest = entry["data"]
-    log.info("Stream start: chat_id=%d", data.chat_id)
+    resume_state = entry.get("resume_state")
+    log.info("Stream start: chat_id=%d%s", data.chat_id, " (resume)" if resume_state else "")
 
     return StreamingResponse(
-        stream_chat_generator(data),
+        stream_chat_generator(data, resume_state=resume_state),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -863,45 +873,131 @@ async def stream_chat(token: str):
     )
 
 
-async def stream_chat_generator(data: ChatRequest):
+@app.post("/chat/resume")
+async def resume_chat(request: Request):
+    """
+    Laravel ruft diesen Endpoint auf, nachdem der User eine pausierte Aktion
+    bestätigt oder abgelehnt hat. Laravel übergibt das ausgeführte Tool-Result
+    (oder einen Rejection-Error) und wir geben einen neuen stream_token zurück,
+    mit dem der Browser eine frische SSE-Verbindung öffnet.
+
+    Body: {
+        resume_token: str,       # Vom confirm-request ausgegeben
+        tool_call_id: str,       # Muss mit pending_tool_call_id übereinstimmen
+        tool_result: dict        # Skill-Ergebnis (approved) oder {error: "..."} (rejected)
+    }
+    """
+    verify_auth(request)
+    try:
+        raw = await request.body()
+        body = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        raise HTTPException(400, "Invalid request")
+
+    resume_token = body.get("resume_token", "")
+    tool_call_id = body.get("tool_call_id", "")
+    tool_result  = body.get("tool_result") or {}
+
+    # Abgelaufene Pending-States aufräumen.
+    now = time.time()
+    expired = [k for k, v in pending_chat_states.items() if now - v["created_at"] > PENDING_CHAT_TTL]
+    for k in expired:
+        del pending_chat_states[k]
+
+    state = pending_chat_states.pop(resume_token, None)
+    if not state:
+        raise HTTPException(404, "Unknown or expired resume token")
+
+    if state.get("pending_tool_call_id") != tool_call_id:
+        raise HTTPException(400, "tool_call_id mismatch")
+
+    # Tool-Response in die Message-History einfügen.
+    messages = state["messages"]
+    messages.append({
+        "role": "tool",
+        "tool_call_id": tool_call_id,
+        "content": json.dumps(tool_result, ensure_ascii=False),
+    })
+    state["messages"] = messages
+
+    # all_tool_results aktualisieren, damit der Callback am Ende komplett ist.
+    state["all_tool_results"].append({
+        "tool_call_id": tool_call_id,
+        "name": state.get("pending_skill", ""),
+        "result": tool_result,
+    })
+
+    # Neuen Stream-Token vergeben, der die Continuation triggert.
+    new_token = str(uuid.uuid4())
+    stream_tokens[new_token] = {
+        "data": state["data"],
+        "created_at": time.time(),
+        "resume_state": state,
+    }
+
+    log.info(
+        "Chat resume: chat_id=%d tool_call_id=%s new_token=%s…",
+        state["data"].chat_id, tool_call_id, new_token[:8],
+    )
+    return {"stream_token": new_token, "chat_id": state["data"].chat_id}
+
+
+async def stream_chat_generator(data: ChatRequest, resume_state: Optional[dict] = None):
     """Generator der SSE-Events yieldet. Streamt jeden Token live und
-    behandelt Tool-Calls als Delta-Stream (OpenAI native function-call streaming)."""
+    behandelt Tool-Calls als Delta-Stream (OpenAI native function-call streaming).
+
+    Bei resume_state: Initial-Setup (RAG, build_messages, build_tools) wird übersprungen;
+    stattdessen wird der zuvor gespeicherte Zustand nach User-Bestätigung fortgesetzt."""
     start_time = time.time()
-    full_content = ""
-    usage = {"input_tokens": 0, "output_tokens": 0}
     model = get_model_name(data.model)
-    all_tool_calls = []
-    all_tool_results = []
-    artifacts = []  # Gesammelte render_artifact Ergebnisse
 
     # Helper: Semantischen Status an das Frontend senden (erscheint unter der Chat-Bubble).
     def _status(label: str, icon: str = "💭") -> str:
         return f"event: status\ndata: {json.dumps({'label': label, 'icon': icon}, ensure_ascii=False)}\n\n"
 
     try:
-        # Erstes Lebenszeichen: User hat abgeschickt, wir fangen an nachzudenken.
-        yield _status("Ich überlege kurz…", "💭")
+        if resume_state:
+            full_content      = resume_state.get("full_content", "")
+            usage             = resume_state.get("usage", {"input_tokens": 0, "output_tokens": 0})
+            all_tool_calls    = resume_state.get("all_tool_calls", [])
+            all_tool_results  = resume_state.get("all_tool_results", [])
+            artifacts         = resume_state.get("artifacts", [])
+            messages          = resume_state["messages"]
+            tools             = resume_state.get("tools", [])
+            max_iterations    = resume_state.get("max_iterations", 5)
+            start_iteration   = resume_state.get("iteration", 0) + 1
+            yield _status("Setze fort…", "🧩")
+        else:
+            full_content = ""
+            usage = {"input_tokens": 0, "output_tokens": 0}
+            all_tool_calls = []
+            all_tool_results = []
+            artifacts = []
 
-        # RAG: Laravel-Orchestrator hat Vorrang, sonst fällt auf eigene Suche zurück.
-        rag_context = list(data.rag_prefetched_chunks or [])
-        if not rag_context and data.notebook_ids and data.doc_processor_url:
-            yield _status("Durchsuche dein Wissen…", "📚")
-            rag_context = await asyncio.to_thread(
-                search_documents,
-                query=data.message,
-                notebook_ids=data.notebook_ids,
-                doc_processor_url=data.doc_processor_url,
-                doc_processor_secret=data.doc_processor_secret,
-            )
+            # Erstes Lebenszeichen: User hat abgeschickt, wir fangen an nachzudenken.
+            yield _status("Ich überlege kurz…", "💭")
 
-        messages = build_messages(data, rag_context=rag_context)
-        tools = build_tools(data.tool_definitions, data.skills)
-        max_iterations = 5
+            # RAG: Laravel-Orchestrator hat Vorrang, sonst fällt auf eigene Suche zurück.
+            rag_context = list(data.rag_prefetched_chunks or [])
+            if not rag_context and data.notebook_ids and data.doc_processor_url:
+                yield _status("Durchsuche dein Wissen…", "📚")
+                rag_context = await asyncio.to_thread(
+                    search_documents,
+                    query=data.message,
+                    notebook_ids=data.notebook_ids,
+                    doc_processor_url=data.doc_processor_url,
+                    doc_processor_secret=data.doc_processor_secret,
+                )
+
+            messages = build_messages(data, rag_context=rag_context)
+            tools = build_tools(data.tool_definitions, data.skills)
+            max_iterations = 5
+            start_iteration = 0
 
         # Streaming-Loop: Jede Iteration streamt die Antwort live.
         # Erkennt GPT einen Tool-Call, werden dessen Argument-Deltas gesammelt,
         # der Tool-Call ausgeführt, und die nächste Iteration holt die Folge-Antwort.
-        for iteration in range(max_iterations):
+        for iteration in range(start_iteration, max_iterations):
             if iteration > 0:
                 yield _status("Verarbeite die Ergebnisse…", "🧩")
 
@@ -955,13 +1051,92 @@ async def stream_chat_generator(data: ChatRequest):
                     "tool_calls": build_assistant_tool_calls(tool_calls_buffer),
                 })
 
-                for idx in sorted(tool_calls_buffer.keys()):
+                # Pre-Scan: Bestätigungspflichtige Skills in diesem Batch erkennen (Skill-System v2).
+                # Bei mehreren pending Skills wird der erste pausiert; weitere erhalten einen
+                # Error-Tool-Result. Non-pending Skills werden zuerst ausgeführt, damit alle
+                # tool_call_ids eine Response haben, bevor die Pause erfolgt.
+                pending_indices = [
+                    idx for idx in sorted(tool_calls_buffer.keys())
+                    if tool_calls_buffer[idx]["name"] in CONFIRMATION_REQUIRED_SKILLS
+                ]
+                first_pending_idx = pending_indices[0] if pending_indices else None
+                extra_pending_idxs = set(pending_indices[1:])
+
+                # Überzählige pending Skills vorab: Synthetischer Error damit OpenAI-Schema passt.
+                for idx in sorted(extra_pending_idxs):
                     buf = tool_calls_buffer[idx]
                     tool_name = buf["name"]
                     try:
                         tool_args = json.loads(buf["arguments"] or "{}")
                     except json.JSONDecodeError:
                         tool_args = {}
+                    err = {"error": "Mehrere bestätigungspflichtige Aktionen in einem Schritt sind nicht unterstützt. Bitte plane sie einzeln."}
+                    all_tool_calls.append({"id": buf["id"], "name": tool_name, "arguments": tool_args})
+                    all_tool_results.append({"tool_call_id": buf["id"], "name": tool_name, "result": err})
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": buf["id"],
+                        "content": json.dumps(err, ensure_ascii=False),
+                    })
+
+                # Ausführungs-Reihenfolge: erst alle non-pending Skills (in original-Order),
+                # dann — ganz am Ende — der pending Skill (pausiert).
+                execution_order = [
+                    idx for idx in sorted(tool_calls_buffer.keys())
+                    if idx != first_pending_idx and idx not in extra_pending_idxs
+                ]
+                if first_pending_idx is not None:
+                    execution_order.append(first_pending_idx)
+
+                for idx in execution_order:
+                    buf = tool_calls_buffer[idx]
+                    tool_name = buf["name"]
+                    try:
+                        tool_args = json.loads(buf["arguments"] or "{}")
+                    except json.JSONDecodeError:
+                        tool_args = {}
+
+                    # Pause auf dem ersten bestätigungspflichtigen Skill: State speichern und return.
+                    if idx == first_pending_idx:
+                        log.info("Stream chat %d: Pause für %s (tool_call_id=%s)", data.chat_id, tool_name, buf["id"])
+                        confirm_resp = await asyncio.to_thread(
+                            request_chat_confirmation,
+                            data.chat_id, data.user_message_id, data.user_id,
+                            buf["id"], tool_name, tool_args,
+                            iteration_content or "",
+                        )
+                        if confirm_resp.get("error"):
+                            err_msg = f"Bestätigung konnte nicht angefordert werden: {confirm_resp['error']}"
+                            log.error("Stream chat %d: %s", data.chat_id, err_msg)
+                            yield f"event: error\ndata: {json.dumps({'error': err_msg})}\n\n"
+                            return
+
+                        resume_token = confirm_resp["resume_token"]
+                        pending_id   = confirm_resp["pending_id"]
+
+                        # Kompletten Loop-State für späteres /chat/resume sichern.
+                        pending_chat_states[resume_token] = {
+                            "data": data,
+                            "messages": messages,
+                            "tools": tools,
+                            "model": model,
+                            "usage": usage,
+                            "all_tool_calls": all_tool_calls + [{"id": buf["id"], "name": tool_name, "arguments": tool_args}],
+                            "all_tool_results": all_tool_results,
+                            "artifacts": artifacts,
+                            "full_content": full_content + iteration_content,
+                            "iteration": iteration,
+                            "max_iterations": max_iterations,
+                            "pending_tool_call_id": buf["id"],
+                            "pending_skill": tool_name,
+                            "created_at": time.time(),
+                        }
+
+                        skill_info = get_skill_label(tool_name, tool_args.get("action") if isinstance(tool_args, dict) else None)
+                        yield f"event: paused\ndata: {json.dumps({'pending_id': pending_id, 'tool_call_id': buf['id'], 'skill': tool_name, 'label': skill_info['label'], 'icon': skill_info['icon']})}\n\n"
+                        log.info("Stream chat %d: Pausiert, resume_token=%s…", data.chat_id, resume_token[:8])
+                        return
+
                     log.info("Stream chat %d: Tool-Call → %s", data.chat_id, tool_name)
                     action = tool_args.get("action") if isinstance(tool_args, dict) else None
                     skill_info = get_skill_label(tool_name, action)
@@ -1660,9 +1835,7 @@ def execute_skill(skill_name: str, params: dict, user_id: int, chat_id: int = 0)
 
 # Artifact-Hints für Skill-Ergebnisse — GPT bekommt Hinweise, wann ein Artifact sinnvoll ist
 SKILL_ARTIFACT_HINTS = {
-    "crm_search": "Stelle diese Ergebnisse als schöne interaktive HTML-Tabelle oder Karten dar. Verwende render_artifact. Links zu Kontakten: /crm/contacts/{id}, zu Deals: /crm/deals/{id}. Links sollen target=\"_top\" haben.",
-    "crm_update_deal": "Zeige die Deal-Änderungen als übersichtliche Karte mit render_artifact. Link zum Deal: /crm/deals/{deal_id}.",
-    "campaign_analyze": "Visualisiere die Kampagnen-Statistiken als KPI-Dashboard mit render_artifact (Balken, Prozent-Kreise o.ä.).",
+    "crm_query": "Stelle diese Ergebnisse als schöne interaktive HTML-Tabelle oder Karten dar. Verwende render_artifact. Links zu Kontakten: /crm/contacts/{id}, zu Deals: /crm/deals/{id}. Links sollen target=\"_top\" haben.",
 }
 
 
@@ -1672,6 +1845,48 @@ def _inject_artifact_hint(skill_name: str, result: dict) -> dict:
     if hint and "error" not in result:
         result["_artifact_hint"] = hint
     return result
+
+
+# ── Helper: Confirmation-Request an Laravel (Skill-System v2) ────────
+
+def request_chat_confirmation(
+    chat_id: int,
+    user_message_id: Optional[int],
+    user_id: int,
+    tool_call_id: str,
+    skill: str,
+    params: dict,
+    assistant_text: str = "",
+) -> dict:
+    """
+    Meldet einen bestätigungspflichtigen Tool-Call bei Laravel an.
+    Laravel legt einen Pending-Record an und gibt {pending_id, resume_token} zurück.
+    Rückgabe bei Fehler: {"error": "..."}.
+    """
+    if not LARAVEL_CHAT_CONFIRM_URL:
+        return {"error": "LARAVEL_CHAT_CONFIRM_URL nicht konfiguriert"}
+    try:
+        with httpx.Client(timeout=15) as client:
+            resp = client.post(
+                LARAVEL_CHAT_CONFIRM_URL,
+                json={
+                    "chat_id": chat_id,
+                    "user_message_id": user_message_id,
+                    "user_id": user_id,
+                    "tool_call_id": tool_call_id,
+                    "skill": skill,
+                    "params": params,
+                    "assistant_text": assistant_text,
+                },
+                headers={"Authorization": f"Bearer {AI_GATEWAY_SECRET}"},
+            )
+            if resp.status_code == 200:
+                return resp.json()
+            log.warning("confirm-request fehlgeschlagen: %d — %s", resp.status_code, resp.text)
+            return {"error": f"HTTP {resp.status_code}"}
+    except Exception as e:
+        log.error("confirm-request Fehler: %s", str(e))
+        return {"error": str(e)}
 
 
 # ── Helper: Bildgenerierung (Gateway-intercepted) ────────────────────
