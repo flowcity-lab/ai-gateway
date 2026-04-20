@@ -172,10 +172,10 @@ class ChatRequest(BaseModel):
     # RAG: Von Laravel vor-gesuchte & gemergte Chunks (Welle 3 Orchestrator).
     # Wenn gesetzt (len > 0), überspringt der Gateway seine eigene search_documents()-Pipeline.
     rag_prefetched_chunks: list = []  # [{text, filename, score, source, page_num?, marker?, has_image?, image_b64?}]
-    rag_summary: dict = None          # Metadata vom Orchestrator (intent, rewritten query, source stats)
+    rag_summary: Optional[dict] = None          # Metadata vom Orchestrator (intent, rewritten query, source stats)
     rag_citations: list = []          # [{marker, source_type, source_label, filename, notebook_id, page_num, score}]
     # Trainer-Branding (Farben, Logo als Base64)
-    trainer_branding: dict = None     # {"company_name", "primary_color", "logo_base64", ...}
+    trainer_branding: Optional[dict] = None     # {"company_name", "primary_color", "logo_base64", ...}
 
 
 # ── Skill-Labels (technischer Name → menschenlesbar) ────────────────
@@ -2122,7 +2122,7 @@ class TaskExecuteRequest(BaseModel):
     callback_url: str = ""          # Laravel callback URL
     execution_seconds: int = 0      # Bisherige kumulierte Laufzeit (bei Resume)
     laravel_base_url: str = ""      # z.B. https://trainer.example.com/api/ai
-    trainer_branding: dict = None   # Trainer-Branding (Farben, Logo als Base64)
+    trainer_branding: Optional[dict] = None   # Trainer-Branding (Farben, Logo als Base64)
 
 
 @app.post("/task/execute")
