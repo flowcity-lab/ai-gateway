@@ -1007,6 +1007,7 @@ async def stream_chat_generator(data: ChatRequest, resume_state: Optional[dict] 
                     "source_id":  c.get("notebook_id"),
                     "source_url": c.get("source_url"),
                     "image_hash": c.get("image_hash"),
+                    "marker":     c.get("marker"),
                 }
                 for c in (rag_context or []) if c.get("has_image") and c.get("image_b64")
             ]
@@ -1308,6 +1309,7 @@ def chat_pipeline_sync(data: ChatRequest) -> dict:
                 "source_id":  c.get("notebook_id"),
                 "source_url": c.get("source_url"),
                 "image_hash": c.get("image_hash"),
+                "marker":     c.get("marker"),
             }
             for c in (rag_context or []) if c.get("has_image") and c.get("image_b64")
         ]
@@ -1491,6 +1493,7 @@ def chat_pipeline(data: ChatRequest):
                 "source_id":  c.get("notebook_id"),
                 "source_url": c.get("source_url"),
                 "image_hash": c.get("image_hash"),
+                "marker":     c.get("marker"),
             }
             for c in (rag_context or []) if c.get("has_image") and c.get("image_b64")
         ]
