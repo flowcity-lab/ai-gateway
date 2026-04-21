@@ -971,6 +971,7 @@ async def stream_chat_generator(data: ChatRequest, resume_state: Optional[dict] 
             tools             = resume_state.get("tools", [])
             max_iterations    = resume_state.get("max_iterations", 5)
             start_iteration   = resume_state.get("iteration", 0) + 1
+            pending_rag_images = resume_state.get("pending_rag_images", [])
             yield _status("Setze fort…", "🧩")
         else:
             full_content = ""
@@ -996,6 +997,19 @@ async def stream_chat_generator(data: ChatRequest, resume_state: Optional[dict] 
 
             messages = build_messages(data, rag_context=rag_context)
             tools = build_tools(data.tool_definitions, data.skills)
+            # RAG-Bilder für Callback sammeln (analog chat_pipeline_sync).
+            pending_rag_images = [
+                {
+                    "image_b64":  c["image_b64"],
+                    "filename":   c.get("filename", ""),
+                    "page_num":   c.get("page_num", 0),
+                    "source":     c.get("source_type"),
+                    "source_id":  c.get("notebook_id"),
+                    "source_url": c.get("source_url"),
+                    "image_hash": c.get("image_hash"),
+                }
+                for c in (rag_context or []) if c.get("has_image") and c.get("image_b64")
+            ]
             max_iterations = 5
             start_iteration = 0
 
@@ -1129,6 +1143,7 @@ async def stream_chat_generator(data: ChatRequest, resume_state: Optional[dict] 
                             "all_tool_calls": all_tool_calls + [{"id": buf["id"], "name": tool_name, "arguments": tool_args}],
                             "all_tool_results": all_tool_results,
                             "artifacts": artifacts,
+                            "pending_rag_images": pending_rag_images,
                             "full_content": full_content + iteration_content,
                             "iteration": iteration,
                             "max_iterations": max_iterations,
@@ -1224,6 +1239,8 @@ async def stream_chat_generator(data: ChatRequest, resume_state: Optional[dict] 
             }
             if artifacts:
                 callback_data["artifacts"] = artifacts
+            if pending_rag_images:
+                callback_data["rag_images"] = pending_rag_images
             # RAG-Metadaten aus dem Laravel-Orchestrator zurückreichen
             if data.rag_citations:
                 callback_data["rag_citations"] = data.rag_citations
@@ -1279,12 +1296,18 @@ def chat_pipeline_sync(data: ChatRequest) -> dict:
         pending_images = []
         pending_pdfs = []
         artifacts = []  # Gesammelte render_artifact Ergebnisse
-        # RAG-Bilder (multimodal PDF-Seiten) für Anzeige im Chat sammeln
+        # RAG-Bilder (multimodal PDF-Seiten, URL-Bilder) für Anzeige im Chat sammeln.
+        # source_type + source_id (= notebook_id) reichen wir mit, damit Laravel die
+        # Scope-/Visibility-Filter im Chat-UI anwenden kann (visibleRagImages()).
         pending_rag_images = [
             {
-                "image_b64": c["image_b64"],
-                "filename":  c.get("filename", ""),
-                "page_num":  c.get("page_num", 0),
+                "image_b64":  c["image_b64"],
+                "filename":   c.get("filename", ""),
+                "page_num":   c.get("page_num", 0),
+                "source":     c.get("source_type"),
+                "source_id":  c.get("notebook_id"),
+                "source_url": c.get("source_url"),
+                "image_hash": c.get("image_hash"),
             }
             for c in (rag_context or []) if c.get("has_image") and c.get("image_b64")
         ]
@@ -1401,6 +1424,11 @@ def chat_pipeline_sync(data: ChatRequest) -> dict:
             log.info("Chat %d [sync]: %d Artifacts in Response",
                      data.chat_id, len(artifacts))
 
+        if pending_rag_images:
+            resp["rag_images"] = pending_rag_images
+            log.info("Chat %d [sync]: %d RAG-Bilder in Response (rag_images)",
+                     data.chat_id, len(pending_rag_images))
+
         return resp
 
     except Exception as e:
@@ -1453,6 +1481,19 @@ def chat_pipeline(data: ChatRequest):
         all_tool_calls = []
         all_tool_results = []
         artifacts = []  # Gesammelte render_artifact Ergebnisse
+        # RAG-Bilder für Callback sammeln (analog chat_pipeline_sync).
+        pending_rag_images = [
+            {
+                "image_b64":  c["image_b64"],
+                "filename":   c.get("filename", ""),
+                "page_num":   c.get("page_num", 0),
+                "source":     c.get("source_type"),
+                "source_id":  c.get("notebook_id"),
+                "source_url": c.get("source_url"),
+                "image_hash": c.get("image_hash"),
+            }
+            for c in (rag_context or []) if c.get("has_image") and c.get("image_b64")
+        ]
         max_iterations = 5  # Schutz vor Endlos-Loops
 
         for iteration in range(max_iterations):
