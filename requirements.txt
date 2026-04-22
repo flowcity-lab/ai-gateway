@@ -2,12 +2,10 @@ fastapi
 uvicorn[standard]
 python-multipart
 httpx
-requests
 openai
 redis
 pydantic
 weasyprint
-google-auth
 openpyxl
 phonenumbers
 chardet
