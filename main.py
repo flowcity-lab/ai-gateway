@@ -2035,6 +2035,49 @@ def generate_pdf(params: dict, user_id: int, chat_id: int) -> dict:
         return {"error": f"PDF-Generierung fehlgeschlagen: {str(e)}"}
 
 
+# ── Direkter HTML→PDF Endpoint (Laravel ruft direkt, ohne LLM) ───────
+
+class RenderPdfRequest(BaseModel):
+    html: str
+    filename: str = "document.pdf"
+
+
+@app.post("/render-pdf")
+async def render_pdf(request: Request, body: RenderPdfRequest):
+    """
+    Direkter HTML→PDF Konverter via WeasyPrint. Synchron, gibt application/pdf binary zurück.
+    Wird von Laravel (DocumentGenerationService / TemplateRenderService) genutzt, um
+    fertig gerenderte Mustache-Templates ohne LLM-Roundtrip in PDFs zu wandeln.
+    """
+    verify_auth(request)
+
+    html = (body.html or "").strip()
+    if not html:
+        raise HTTPException(400, "Empty html")
+
+    try:
+        import weasyprint
+        log.info("render-pdf: filename='%s', html_length=%d", body.filename[:80], len(html))
+        pdf_bytes = weasyprint.HTML(string=html).write_pdf()
+    except Exception as e:
+        log.exception("WeasyPrint render failed")
+        raise HTTPException(502, f"PDF render failed: {e}")
+
+    if not pdf_bytes:
+        raise HTTPException(502, "PDF render returned no data")
+
+    safe_name = (body.filename or "document.pdf").replace('"', '').replace("\n", "").strip() or "document.pdf"
+
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'inline; filename="{safe_name}"',
+            "X-PDF-Bytes": str(len(pdf_bytes)),
+        },
+    )
+
+
 # ── Helper: Callback an Laravel ──────────────────────────────────────
 
 def send_callback(url: str, payload: dict):
