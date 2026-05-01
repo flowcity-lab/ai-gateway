@@ -2191,6 +2191,8 @@ def _invoice_generate_pipeline(data: GenerateInvoiceRequest):
 
         # Anthropic erwartet das Template-File als container_upload-Block in der User-Message;
         # `container` selbst akzeptiert nur `skills` (und optional eine bestehende container-id).
+        # tool_choice="any" ZWINGT Claude zur Tool-Nutzung beim ersten Turn — sonst antwortet
+        # Sonnet 4.5 manchmal nur mit Text und stop_reason=end_turn ohne die Skill auszufuehren.
         msg = client.beta.messages.create(
             model=model,
             max_tokens=data.max_tokens,
@@ -2198,6 +2200,7 @@ def _invoice_generate_pipeline(data: GenerateInvoiceRequest):
                 "skills": [{"type": "anthropic", "skill_id": "docx", "version": "latest"}],
             },
             tools=[{"type": "code_execution_20250825", "name": "code_execution"}],
+            tool_choice={"type": "any"},
             betas=["code-execution-2025-08-25", "skills-2025-10-02", "files-api-2025-04-14"],
             messages=[{
                 "role": "user",
@@ -2207,6 +2210,10 @@ def _invoice_generate_pipeline(data: GenerateInvoiceRequest):
                 ],
             }],
         )
+        log.info("invoice %d: claude responded stop_reason=%s, blocks=%d",
+                 data.invoice_id,
+                 getattr(msg, "stop_reason", "?"),
+                 len(msg.content or []))
 
         usage_in = getattr(msg.usage, "input_tokens", 0) or 0
         usage_out = getattr(msg.usage, "output_tokens", 0) or 0
@@ -2214,6 +2221,8 @@ def _invoice_generate_pipeline(data: GenerateInvoiceRequest):
         # 4) Output-File-ID aus den tool_result-Blöcken extrahieren.
         output_file_id = _extract_output_file_id(msg)
         if not output_file_id:
+            # Diagnose-Dump: was hat Claude eigentlich zurueckgegeben?
+            _log_message_diagnostics(data.invoice_id, msg)
             raise RuntimeError("Claude hat keine Output-DOCX produziert "
                                "(stop_reason=" + str(getattr(msg, "stop_reason", "?")) + ")")
 
@@ -2274,40 +2283,39 @@ def _invoice_generate_pipeline(data: GenerateInvoiceRequest):
 
 
 def _build_invoice_prompt(output_filename: str, template_filename: str, data_json: str, hint: str) -> str:
-    """Baut den User-Prompt für die docx-Skill. Sprache: Deutsch."""
+    """Baut den User-Prompt fuer die docx-Skill. Sprache: Deutsch.
+
+    Stil: imperativ, keine Erklaerungen, keine Diskussion. Sonnet 4.5 neigt sonst
+    dazu, in Text zu antworten statt das Tool zu nutzen.
+    """
     hint_block = ""
     if hint and hint.strip():
         hint_block = (
-            "\n\nZusätzliche Hinweise des Trainers (frei formulierbar — direkt sinngemäß "
-            "ins Dokument einarbeiten, ggf. unter den Positionen):\n"
+            "\n\nZUSAETZLICHE HINWEISE DES TRAINERS (sinngemaess ins Dokument einarbeiten,\n"
+            "ggf. unter den Positionen):\n"
             f"{hint.strip()}\n"
         )
 
     return (
-        "Du bekommst eine Word-Vorlage (.docx) und strukturierte Daten als JSON. Die "
-        "Vorlage wurde bereits in den Code-Execution-Container hochgeladen — sie liegt "
-        f"als Datei mit dem Namen '{template_filename}' im Upload-Verzeichnis "
-        "('/mnt/user-data/uploads/'). Falls der Pfad abweicht, finde sie via "
-        "`os.listdir('/mnt/user-data/uploads')` (es ist die einzige .docx-Datei dort).\n\n"
-        "Aufgabe: Öffne die Vorlage mit der docx-Skill (python-docx), ersetze alle "
-        "Platzhalter und Beispielwerte 1:1 mit den echten Daten aus dem JSON, behalte "
-        "Layout, Schriftarten, Farben, Logos und Formatierung exakt bei.\n\n"
-        "Regeln:\n"
-        "- Keine Änderungen an Header/Footer-Branding (Logo, Farbleisten, Briefpapier-Optik).\n"
-        "- Mustache-Platzhalter (z.B. {{recipient.name}}) und alle erkennbaren "
-        "Beispieltexte (Lorem-ipsum, Mock-Namen, Mock-Beträge) durch echte Werte ersetzen.\n"
-        "- Positionsliste vollständig befüllen — jede Zeile aus items[] wird eine "
-        "Tabellenzeile, MwSt. und Summen exakt aus den JSON-Werten übernehmen.\n"
-        "- Datums-Format: TT.MM.JJJJ. Beträge mit Währung und 2 Dezimalstellen, deutsches "
-        "Trennzeichen (1.234,56 €).\n"
-        "- Falls die Vorlage zusätzliche Felder enthält, die im JSON fehlen: leer lassen "
-        "(keine Platzhalter sichtbar lassen).\n"
-        f"- Speichere die fertige Datei am Ende als '{output_filename}' und gib sie als "
-        "Output-File zurück (z.B. nach '/mnt/user-data/outputs/' oder direkt im "
-        "Arbeitsverzeichnis — Hauptsache es entsteht ein File, das im tool_result "
-        "auftaucht).\n"
+        "AUFGABE: Fuelle eine Word-Rechnungsvorlage mit echten Daten und gib das "
+        "fertige .docx als Output-File zurueck.\n\n"
+        "VORGEHEN (genau diese Schritte, ohne Rueckfragen):\n"
+        "1. code_execution starten und python ausfuehren.\n"
+        f"2. Vorlage einlesen: from docx import Document; doc = Document('/mnt/user-data/uploads/{template_filename}')\n"
+        "   (Falls Pfad nicht stimmt: per os.listdir die einzige .docx unter /mnt/user-data/uploads/ finden.)\n"
+        "3. Alle Mustache-Platzhalter (z.B. {{recipient.name}}, {{items[0].description}}, {{totals.gross}}) "
+        "und alle Beispieltexte/Mock-Werte durch die echten Werte aus dem unten angefuegten JSON ersetzen.\n"
+        "4. Positions-Tabelle vollstaendig befuellen: jede Zeile aus items[] wird eine Tabellenzeile "
+        "mit description, quantity, unit, unit_price, tax_rate, line_gross.\n"
+        f"5. Speichern unter '/mnt/user-data/outputs/{output_filename}'.\n"
+        "6. Fertig. KEINE textuelle Zusammenfassung am Ende noetig.\n\n"
+        "FORMATIERUNGS-REGELN:\n"
+        "- Layout, Schriftarten, Farben, Logos, Header/Footer EXAKT beibehalten — nichts veraendern.\n"
+        "- Datum: TT.MM.JJJJ. Betraege: 2 Dezimalstellen, deutsches Trennzeichen, Waehrungssymbol "
+        "(z.B. 1.234,56 EUR).\n"
+        "- Felder die im JSON fehlen: leer lassen (Platzhalter entfernen).\n"
         f"{hint_block}\n"
-        "Daten (JSON):\n```json\n"
+        "DATEN (JSON):\n```json\n"
         f"{data_json}\n```"
     )
 
@@ -2317,29 +2325,48 @@ def _extract_output_file_id(msg) -> Optional[str]:
     Sucht in den Content-Blöcken der Antwort nach dem zuletzt erzeugten File.
     Code-Execution liefert tool_result-Blöcke vom Typ
     `bash_code_execution_tool_result` / `code_execution_tool_result`, deren
-    `content` ein file_id enthalten kann. Wir nehmen das LETZTE gefundene File.
+    `content` ein verschachteltes `code_execution_output_block` mit `file_id`
+    enthalten kann. Wir traversieren rekursiv und nehmen das LETZTE gefundene
+    File, das nicht das Input-Template ist (anhand des Patterns "rechnung-*.docx"
+    laesst sich das nicht filtern, deshalb nur LETZTES).
     """
     last_id: Optional[str] = None
     try:
         for block in (msg.content or []):
-            block_type = getattr(block, "type", "") or ""
-            if "tool_result" not in block_type and "tool_use" not in block_type:
-                continue
-            inner = getattr(block, "content", None)
-            if inner is None:
-                continue
-            if isinstance(inner, list):
-                for item in inner:
-                    fid = _file_id_from_item(item)
-                    if fid:
-                        last_id = fid
-            else:
-                fid = _file_id_from_item(inner)
-                if fid:
-                    last_id = fid
+            fid = _walk_for_file_id(block)
+            if fid:
+                last_id = fid
     except Exception as e:
         log.warning("extract_output_file_id: parse failure: %s", e)
     return last_id
+
+
+def _walk_for_file_id(node, depth: int = 0) -> Optional[str]:
+    """Rekursive Suche nach file_id in beliebig verschachtelten Strukturen."""
+    if node is None or depth > 8:
+        return None
+    last: Optional[str] = None
+    # Direktes Attribut/Key
+    fid = _file_id_from_item(node)
+    if fid:
+        last = fid
+    # Kinder: .content (Pydantic), 'content' (dict), generelle dict-values
+    children = []
+    if hasattr(node, "content"):
+        c = getattr(node, "content", None)
+        if c is not None:
+            children.append(c)
+    if isinstance(node, dict):
+        for v in node.values():
+            if v is not None:
+                children.append(v)
+    if isinstance(node, list):
+        children.extend(node)
+    for child in children:
+        sub = _walk_for_file_id(child, depth + 1)
+        if sub:
+            last = sub
+    return last
 
 
 def _file_id_from_item(item) -> Optional[str]:
@@ -2356,6 +2383,32 @@ def _file_id_from_item(item) -> Optional[str]:
         if item.get("type") in {"file", "container_upload"} and item.get("id"):
             return str(item["id"])
     return None
+
+
+def _log_message_diagnostics(invoice_id: int, msg) -> None:
+    """
+    Bei `keine Output-DOCX`-Fehler: dump Block-Typen, Text-Snippets und
+    erkannte file_ids, damit wir verstehen warum Claude nichts produziert hat.
+    """
+    try:
+        stop_reason = getattr(msg, "stop_reason", "?")
+        log.warning("invoice %d: NO OUTPUT FILE — stop_reason=%s, blocks:",
+                    invoice_id, stop_reason)
+        for i, block in enumerate(msg.content or []):
+            btype = getattr(block, "type", "?")
+            snippet = ""
+            if btype == "text":
+                txt = getattr(block, "text", "") or ""
+                snippet = (txt[:500] + "...") if len(txt) > 500 else txt
+            elif "tool_use" in btype:
+                inp = getattr(block, "input", None)
+                snippet = (str(inp)[:300] + "...") if inp and len(str(inp)) > 300 else str(inp)
+            elif "tool_result" in btype:
+                inner = getattr(block, "content", None)
+                snippet = (str(inner)[:500] + "...") if inner and len(str(inner)) > 500 else str(inner)
+            log.warning("  [%d] type=%s snippet=%s", i, btype, snippet)
+    except Exception as e:
+        log.warning("invoice %d: diagnostics dump failed: %s", invoice_id, e)
 
 
 def _anthropic_cost_usd(model: str, input_tokens: int, output_tokens: int) -> float:
