@@ -2187,16 +2187,23 @@ def _invoice_generate_pipeline(data: GenerateInvoiceRequest):
         log.info("invoice %d: claude-call model=%s, template_file=%s",
                  data.invoice_id, model, template_file_id)
 
+        # Anthropic erwartet das Template-File als container_upload-Block in der User-Message;
+        # `container` selbst akzeptiert nur `skills` (und optional eine bestehende container-id).
         msg = client.beta.messages.create(
             model=model,
             max_tokens=data.max_tokens,
             container={
-                "file_ids": [template_file_id],
                 "skills": [{"type": "anthropic", "skill_id": "docx", "version": "latest"}],
             },
             tools=[{"type": "code_execution_20250825", "name": "code_execution"}],
             betas=["code-execution-2025-08-25", "skills-2025-10-02", "files-api-2025-04-14"],
-            messages=[{"role": "user", "content": prompt_text}],
+            messages=[{
+                "role": "user",
+                "content": [
+                    {"type": "container_upload", "file_id": template_file_id},
+                    {"type": "text", "text": prompt_text},
+                ],
+            }],
         )
 
         usage_in = getattr(msg.usage, "input_tokens", 0) or 0
