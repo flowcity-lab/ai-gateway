@@ -29,6 +29,10 @@ from stream_utils import accumulate_tool_call_delta, build_assistant_tool_calls
 
 AI_GATEWAY_SECRET = os.environ.get("AI_GATEWAY_SECRET", "")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+
+# Modell für Pure-AI Invoice-Render (Anthropic Skills + Code Execution)
+ANTHROPIC_INVOICE_MODEL = os.environ.get("ANTHROPIC_INVOICE_MODEL", "claude-sonnet-4-5")
 
 # Builder-Chat Modell (von Laravel per Coolify-Sync gesetzt)
 BUILDER_CHAT_MODEL = os.environ.get("BUILDER_CHAT_MODEL", "gpt-4o")
@@ -71,6 +75,25 @@ def get_openai_client():
 def get_openai_async_client():
     """Asynchroner OpenAI-Client für SSE-Streaming (blockiert den Event-Loop nicht)."""
     return openai.AsyncOpenAI(api_key=OPENAI_API_KEY)
+
+
+def get_anthropic_client():
+    """Erstellt Anthropic-Client (lazy, nur wenn Pure-AI-Render benötigt wird)."""
+    import anthropic
+    if not ANTHROPIC_API_KEY:
+        raise RuntimeError("ANTHROPIC_API_KEY nicht gesetzt")
+    return anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+
+
+# Kosten-Tabelle Anthropic ($ pro 1M Tokens) für /generate-invoice Cost-Tracking.
+# Quelle: https://docs.anthropic.com/en/docs/about-claude/models  (Stand 2026-04)
+_ANTHROPIC_COSTS = {
+    "claude-opus-4-7":     {"input": 15.00, "output": 75.00},
+    "claude-opus-4-5":     {"input": 15.00, "output": 75.00},
+    "claude-sonnet-4-5":   {"input":  3.00, "output": 15.00},
+    "claude-sonnet-4":     {"input":  3.00, "output": 15.00},
+    "claude-haiku-4-5":    {"input":  1.00, "output":  5.00},
+}
 
 
 def get_model_name(requested_model: str) -> str:
@@ -2076,6 +2099,251 @@ async def render_pdf(request: Request, body: RenderPdfRequest):
             "X-PDF-Bytes": str(len(pdf_bytes)),
         },
     )
+
+
+# ── Pure-AI Invoice/Offer Generator (Anthropic Skills + Code Execution) ──
+#
+# Laravel POSTet Template-DOCX (base64) + Document-Daten (JSON). Der Gateway
+# läuft im Hintergrund: lädt das Template als File ans Anthropic Files API,
+# startet einen Code-Execution-Container mit der `docx`-Skill, lässt Claude
+# das Template per python-docx befüllen und gibt die fertige DOCX-Datei
+# (base64) per Callback an Laravel zurück. Inkl. Token-Usage + USD-Kosten.
+
+class GenerateInvoiceRequest(BaseModel):
+    job_id: int                                  # AppJob.id für Callback-Zuordnung
+    user_id: int
+    invoice_id: int                              # invoices.id
+    callback_url: str                            # z.B. /api/ai/invoice/complete
+    template_b64: str                            # DOCX-Vorlage als base64
+    template_filename: str = "template.docx"
+    output_filename: str = "invoice.docx"
+    document_data: dict = {}                     # Alle Mustache-Werte aufgelöst
+    prompt_hint: str = ""                        # Optionale freie Zusatzinstruktion (z.B. invoice_notes)
+    model: str = ""                              # Override (Default: ANTHROPIC_INVOICE_MODEL)
+    max_tokens: int = 8192
+
+
+@app.post("/generate-invoice")
+async def generate_invoice(request: Request, bg: BackgroundTasks):
+    """Startet Pure-AI Document-Render im Hintergrund. Antwortet sofort."""
+    verify_auth(request)
+    body = await request.json()
+    data = GenerateInvoiceRequest(**body)
+
+    if not ANTHROPIC_API_KEY:
+        raise HTTPException(503, "ANTHROPIC_API_KEY nicht konfiguriert")
+    if not data.template_b64:
+        raise HTTPException(400, "template_b64 fehlt")
+    if not data.callback_url:
+        raise HTTPException(400, "callback_url fehlt")
+
+    bg.add_task(_invoice_generate_pipeline, data)
+    return {"status": "accepted", "job_id": data.job_id, "invoice_id": data.invoice_id}
+
+
+def _invoice_generate_pipeline(data: GenerateInvoiceRequest):
+    """
+    Background-Pipeline: Template hochladen → Claude rendert via docx-Skill →
+    fertige DOCX downloaden → Callback an Laravel.
+    Sendet bei Erfolg UND bei jedem Fehler einen Callback (status: ready/failed).
+    """
+    started_at = time.time()
+    model = data.model or ANTHROPIC_INVOICE_MODEL
+    template_file_id = None
+    output_file_id = None
+    usage_in = 0
+    usage_out = 0
+
+    try:
+        client = get_anthropic_client()
+
+        # 1) Template-DOCX als File ans Anthropic Files API hochladen.
+        try:
+            template_bytes = base64.b64decode(data.template_b64)
+        except Exception as e:
+            raise RuntimeError(f"template_b64 ungültig: {e}")
+
+        log.info("invoice %d job %d: upload template (%d bytes) → Anthropic Files API",
+                 data.invoice_id, data.job_id, len(template_bytes))
+
+        upload_resp = client.beta.files.upload(
+            file=(data.template_filename, template_bytes,
+                  "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+            extra_headers={"anthropic-beta": "files-api-2025-04-14"},
+        )
+        template_file_id = upload_resp.id
+
+        # 2) Prompt bauen — die Skill kennt python-docx, wir schicken die Daten als JSON.
+        data_json = json.dumps(data.document_data, ensure_ascii=False, indent=2)
+        prompt_text = _build_invoice_prompt(data.output_filename, data_json, data.prompt_hint)
+
+        # 3) Messages-Call mit code_execution + docx-Skill + Template-File.
+        log.info("invoice %d: claude-call model=%s, template_file=%s",
+                 data.invoice_id, model, template_file_id)
+
+        msg = client.beta.messages.create(
+            model=model,
+            max_tokens=data.max_tokens,
+            container={
+                "file_ids": [template_file_id],
+                "skills": [{"type": "anthropic", "skill_id": "docx", "version": "latest"}],
+            },
+            tools=[{"type": "code_execution_20250825", "name": "code_execution"}],
+            betas=["code-execution-2025-08-25", "skills-2025-10-02", "files-api-2025-04-14"],
+            messages=[{"role": "user", "content": prompt_text}],
+        )
+
+        usage_in = getattr(msg.usage, "input_tokens", 0) or 0
+        usage_out = getattr(msg.usage, "output_tokens", 0) or 0
+
+        # 4) Output-File-ID aus den tool_result-Blöcken extrahieren.
+        output_file_id = _extract_output_file_id(msg)
+        if not output_file_id:
+            raise RuntimeError("Claude hat keine Output-DOCX produziert "
+                               "(stop_reason=" + str(getattr(msg, "stop_reason", "?")) + ")")
+
+        # 5) Output-DOCX downloaden.
+        log.info("invoice %d: download output file=%s", data.invoice_id, output_file_id)
+        dl = client.beta.files.download(
+            file_id=output_file_id,
+            extra_headers={"anthropic-beta": "files-api-2025-04-14"},
+        )
+        output_bytes = dl.read()
+        if not output_bytes:
+            raise RuntimeError("Output-File ist leer")
+
+        duration_ms = int((time.time() - started_at) * 1000)
+        cost_usd = _anthropic_cost_usd(model, usage_in, usage_out)
+
+        log.info("invoice %d job %d: ready in %dms, %d input + %d output tokens, $%.4f",
+                 data.invoice_id, data.job_id, duration_ms, usage_in, usage_out, cost_usd)
+
+        send_callback(data.callback_url, {
+            "job_id":         data.job_id,
+            "invoice_id":     data.invoice_id,
+            "status":         "ready",
+            "file_b64":       base64.b64encode(output_bytes).decode("ascii"),
+            "filename":       data.output_filename,
+            "model":          model,
+            "usage":          {"input_tokens": usage_in, "output_tokens": usage_out},
+            "cost_usd":       round(cost_usd, 6),
+            "duration_ms":    duration_ms,
+        })
+
+    except Exception as e:
+        duration_ms = int((time.time() - started_at) * 1000)
+        cost_usd = _anthropic_cost_usd(model, usage_in, usage_out)
+        log.exception("invoice %d job %d: pipeline failed", data.invoice_id, data.job_id)
+        send_callback(data.callback_url, {
+            "job_id":      data.job_id,
+            "invoice_id":  data.invoice_id,
+            "status":      "failed",
+            "error":       str(e),
+            "model":       model,
+            "usage":       {"input_tokens": usage_in, "output_tokens": usage_out},
+            "cost_usd":    round(cost_usd, 6),
+            "duration_ms": duration_ms,
+        })
+    finally:
+        # Hochgeladenes Template aufräumen (Skill-Files bleiben — werden nicht eigens
+        # gelöscht; Files API hat eigene Retention).
+        if template_file_id:
+            try:
+                client.beta.files.delete(
+                    file_id=template_file_id,
+                    extra_headers={"anthropic-beta": "files-api-2025-04-14"},
+                )
+            except Exception as cleanup_err:
+                log.warning("invoice %d: template-file cleanup fehlgeschlagen: %s",
+                            data.invoice_id, cleanup_err)
+
+
+def _build_invoice_prompt(output_filename: str, data_json: str, hint: str) -> str:
+    """Baut den User-Prompt für die docx-Skill. Sprache: Deutsch."""
+    hint_block = ""
+    if hint and hint.strip():
+        hint_block = (
+            "\n\nZusätzliche Hinweise des Trainers (frei formulierbar — direkt sinngemäß "
+            "ins Dokument einarbeiten, ggf. unter den Positionen):\n"
+            f"{hint.strip()}\n"
+        )
+
+    return (
+        "Du bekommst eine Word-Vorlage (.docx) als angehängtes File und strukturierte "
+        "Daten als JSON. Aufgabe: Öffne die Vorlage mit der docx-Skill, ersetze alle "
+        "Platzhalter und Beispielwerte 1:1 mit den echten Daten aus dem JSON, behalte "
+        "Layout, Schriftarten, Farben, Logos und Formatierung exakt bei.\n\n"
+        "Regeln:\n"
+        "- Keine Änderungen an Header/Footer-Branding (Logo, Farbleisten, Briefpapier-Optik).\n"
+        "- Mustache-Platzhalter (z.B. {{recipient.name}}) und alle erkennbaren "
+        "Beispieltexte (Lorem-ipsum, Mock-Namen, Mock-Beträge) durch echte Werte ersetzen.\n"
+        "- Positionsliste vollständig befüllen — jede Zeile aus items[] wird eine "
+        "Tabellenzeile, MwSt. und Summen exakt aus den JSON-Werten übernehmen.\n"
+        "- Datums-Format: TT.MM.JJJJ. Beträge mit Währung und 2 Dezimalstellen, deutsches "
+        "Trennzeichen (1.234,56 €).\n"
+        "- Falls die Vorlage zusätzliche Felder enthält, die im JSON fehlen: leer lassen "
+        "(keine Platzhalter sichtbar lassen).\n"
+        f"- Speichere die fertige Datei am Ende als '{output_filename}' und gib sie zurück.\n"
+        f"{hint_block}\n"
+        "Daten (JSON):\n```json\n"
+        f"{data_json}\n```"
+    )
+
+
+def _extract_output_file_id(msg) -> Optional[str]:
+    """
+    Sucht in den Content-Blöcken der Antwort nach dem zuletzt erzeugten File.
+    Code-Execution liefert tool_result-Blöcke vom Typ
+    `bash_code_execution_tool_result` / `code_execution_tool_result`, deren
+    `content` ein file_id enthalten kann. Wir nehmen das LETZTE gefundene File.
+    """
+    last_id: Optional[str] = None
+    try:
+        for block in (msg.content or []):
+            block_type = getattr(block, "type", "") or ""
+            if "tool_result" not in block_type and "tool_use" not in block_type:
+                continue
+            inner = getattr(block, "content", None)
+            if inner is None:
+                continue
+            if isinstance(inner, list):
+                for item in inner:
+                    fid = _file_id_from_item(item)
+                    if fid:
+                        last_id = fid
+            else:
+                fid = _file_id_from_item(inner)
+                if fid:
+                    last_id = fid
+    except Exception as e:
+        log.warning("extract_output_file_id: parse failure: %s", e)
+    return last_id
+
+
+def _file_id_from_item(item) -> Optional[str]:
+    """Liest file_id aus einem Tool-Result-Item (Pydantic-Model oder dict)."""
+    if item is None:
+        return None
+    if hasattr(item, "file_id"):
+        fid = getattr(item, "file_id", None)
+        if fid:
+            return str(fid)
+    if isinstance(item, dict):
+        if item.get("file_id"):
+            return str(item["file_id"])
+        if item.get("type") in {"file", "container_upload"} and item.get("id"):
+            return str(item["id"])
+    return None
+
+
+def _anthropic_cost_usd(model: str, input_tokens: int, output_tokens: int) -> float:
+    """Berechnet USD-Kosten anhand der _ANTHROPIC_COSTS-Tabelle. Unbekanntes Modell → 0."""
+    rates = _ANTHROPIC_COSTS.get(model)
+    if not rates:
+        # Fallback: Sonnet-Preise als konservative Schätzung
+        rates = _ANTHROPIC_COSTS.get("claude-sonnet-4-5", {"input": 3.0, "output": 15.0})
+    return (input_tokens / 1_000_000.0) * rates["input"] + \
+           (output_tokens / 1_000_000.0) * rates["output"]
 
 
 # ── Helper: Callback an Laravel ──────────────────────────────────────
