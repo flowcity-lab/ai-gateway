@@ -2181,7 +2181,9 @@ def _invoice_generate_pipeline(data: GenerateInvoiceRequest):
 
         # 2) Prompt bauen — die Skill kennt python-docx, wir schicken die Daten als JSON.
         data_json = json.dumps(data.document_data, ensure_ascii=False, indent=2)
-        prompt_text = _build_invoice_prompt(data.output_filename, data_json, data.prompt_hint)
+        prompt_text = _build_invoice_prompt(
+            data.output_filename, data.template_filename, data_json, data.prompt_hint
+        )
 
         # 3) Messages-Call mit code_execution + docx-Skill + Template-File.
         log.info("invoice %d: claude-call model=%s, template_file=%s",
@@ -2271,7 +2273,7 @@ def _invoice_generate_pipeline(data: GenerateInvoiceRequest):
                             data.invoice_id, cleanup_err)
 
 
-def _build_invoice_prompt(output_filename: str, data_json: str, hint: str) -> str:
+def _build_invoice_prompt(output_filename: str, template_filename: str, data_json: str, hint: str) -> str:
     """Baut den User-Prompt für die docx-Skill. Sprache: Deutsch."""
     hint_block = ""
     if hint and hint.strip():
@@ -2282,8 +2284,12 @@ def _build_invoice_prompt(output_filename: str, data_json: str, hint: str) -> st
         )
 
     return (
-        "Du bekommst eine Word-Vorlage (.docx) als angehängtes File und strukturierte "
-        "Daten als JSON. Aufgabe: Öffne die Vorlage mit der docx-Skill, ersetze alle "
+        "Du bekommst eine Word-Vorlage (.docx) und strukturierte Daten als JSON. Die "
+        "Vorlage wurde bereits in den Code-Execution-Container hochgeladen — sie liegt "
+        f"als Datei mit dem Namen '{template_filename}' im Upload-Verzeichnis "
+        "('/mnt/user-data/uploads/'). Falls der Pfad abweicht, finde sie via "
+        "`os.listdir('/mnt/user-data/uploads')` (es ist die einzige .docx-Datei dort).\n\n"
+        "Aufgabe: Öffne die Vorlage mit der docx-Skill (python-docx), ersetze alle "
         "Platzhalter und Beispielwerte 1:1 mit den echten Daten aus dem JSON, behalte "
         "Layout, Schriftarten, Farben, Logos und Formatierung exakt bei.\n\n"
         "Regeln:\n"
@@ -2296,7 +2302,10 @@ def _build_invoice_prompt(output_filename: str, data_json: str, hint: str) -> st
         "Trennzeichen (1.234,56 €).\n"
         "- Falls die Vorlage zusätzliche Felder enthält, die im JSON fehlen: leer lassen "
         "(keine Platzhalter sichtbar lassen).\n"
-        f"- Speichere die fertige Datei am Ende als '{output_filename}' und gib sie zurück.\n"
+        f"- Speichere die fertige Datei am Ende als '{output_filename}' und gib sie als "
+        "Output-File zurück (z.B. nach '/mnt/user-data/outputs/' oder direkt im "
+        "Arbeitsverzeichnis — Hauptsache es entsteht ein File, das im tool_result "
+        "auftaucht).\n"
         f"{hint_block}\n"
         "Daten (JSON):\n```json\n"
         f"{data_json}\n```"
