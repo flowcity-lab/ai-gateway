@@ -77,12 +77,17 @@ def get_openai_async_client():
     return openai.AsyncOpenAI(api_key=OPENAI_API_KEY)
 
 
-def get_anthropic_client():
-    """Erstellt Anthropic-Client (lazy, nur wenn Pure-AI-Render benötigt wird)."""
+def get_anthropic_client(api_key: str = ""):
+    """
+    Erstellt Anthropic-Client (lazy, nur wenn Pure-AI-Render benötigt wird).
+    Bevorzugt den uebergebenen `api_key` (aus Laravel ai_configurations / ai_provider_keys),
+    faellt auf die Umgebungsvariable ANTHROPIC_API_KEY zurueck.
+    """
     import anthropic
-    if not ANTHROPIC_API_KEY:
-        raise RuntimeError("ANTHROPIC_API_KEY nicht gesetzt")
-    return anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    effective_key = (api_key or "").strip() or ANTHROPIC_API_KEY
+    if not effective_key:
+        raise RuntimeError("Kein Anthropic-API-Key (weder im Request noch als ANTHROPIC_API_KEY)")
+    return anthropic.Anthropic(api_key=effective_key)
 
 
 # Kosten-Tabelle Anthropic ($ pro 1M Tokens) für /generate-invoice Cost-Tracking.
@@ -2121,6 +2126,7 @@ class GenerateInvoiceRequest(BaseModel):
     prompt_hint: str = ""                        # Optionale freie Zusatzinstruktion (z.B. invoice_notes)
     model: str = ""                              # Override (Default: ANTHROPIC_INVOICE_MODEL)
     max_tokens: int = 8192
+    api_key: str = ""                            # Anthropic-Key aus Laravel ai_configurations (bevorzugt vor ENV)
 
 
 @app.post("/generate-invoice")
@@ -2130,8 +2136,8 @@ async def generate_invoice(request: Request, bg: BackgroundTasks):
     body = await request.json()
     data = GenerateInvoiceRequest(**body)
 
-    if not ANTHROPIC_API_KEY:
-        raise HTTPException(503, "ANTHROPIC_API_KEY nicht konfiguriert")
+    if not (data.api_key or ANTHROPIC_API_KEY):
+        raise HTTPException(503, "Kein Anthropic-API-Key (weder im Request noch als ANTHROPIC_API_KEY)")
     if not data.template_b64:
         raise HTTPException(400, "template_b64 fehlt")
     if not data.callback_url:
@@ -2155,7 +2161,7 @@ def _invoice_generate_pipeline(data: GenerateInvoiceRequest):
     usage_out = 0
 
     try:
-        client = get_anthropic_client()
+        client = get_anthropic_client(api_key=data.api_key)
 
         # 1) Template-DOCX als File ans Anthropic Files API hochladen.
         try:
