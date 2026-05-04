@@ -2122,16 +2122,18 @@ class GenerateInvoiceRequest(BaseModel):
     template_b64: str                            # DOCX-Vorlage als base64
     template_filename: str = "template.docx"
     output_filename: str = "invoice.docx"
-    document_data: dict = {}                     # Alle Mustache-Werte aufgelöst
-    prompt_hint: str = ""                        # Optionale freie Zusatzinstruktion (z.B. invoice_notes)
+    document_data: dict = {}                     # Snapshots: recipient/items/totals/...
+    layout_rules: list = []                      # Aus Phase 1.5 (Intent-Extraction): kurze Tokens
     model: str = ""                              # Override (Default: ANTHROPIC_INVOICE_MODEL)
     max_tokens: int = 8192
-    api_key: str = ""                            # Anthropic-Key aus Laravel ai_configurations (bevorzugt vor ENV)
+    api_key: str = ""                            # Anthropic-Key aus Laravel ai_configurations
+    doc_processor_url: str = ""                  # Pflicht fuer VGSE: Vision-Pages
+    doc_processor_secret: str = ""               # Bearer-Token fuer doc-processor
 
 
 @app.post("/generate-invoice")
 async def generate_invoice(request: Request, bg: BackgroundTasks):
-    """Startet Pure-AI Document-Render im Hintergrund. Antwortet sofort."""
+    """Startet die VGSE-Pipeline im Hintergrund. Antwortet sofort 202."""
     verify_auth(request)
     body = await request.json()
     data = GenerateInvoiceRequest(**body)
@@ -2142,122 +2144,122 @@ async def generate_invoice(request: Request, bg: BackgroundTasks):
         raise HTTPException(400, "template_b64 fehlt")
     if not data.callback_url:
         raise HTTPException(400, "callback_url fehlt")
+    if not data.doc_processor_url or not data.doc_processor_secret:
+        raise HTTPException(400, "doc_processor_url/secret fehlen — VGSE-Pipeline benoetigt Vision-Pages")
 
     bg.add_task(_invoice_generate_pipeline, data)
     return {"status": "accepted", "job_id": data.job_id, "invoice_id": data.invoice_id}
 
 
+# ─── /extract-invoice-intents (Phase 1.5, Claude Haiku) ───────────────
+
+class ExtractInvoiceIntentsRequest(BaseModel):
+    notes: str
+    context: dict = {}                           # recipient, totals, currency
+    model: str = "claude-haiku-4-5"
+    api_key: str = ""                            # bevorzugt vor ENV
+
+
+@app.post("/extract-invoice-intents")
+async def extract_invoice_intents(request: Request):
+    """
+    Synchron, schnell (~1-2s mit Haiku). Antwortet mit den strukturierten Intents
+    plus dem bereinigten display_text. Kein Background — Laravel braucht das
+    Ergebnis fuer den Final-Check-Modal direkt.
+    """
+    verify_auth(request)
+    body = await request.json()
+    data = ExtractInvoiceIntentsRequest(**body)
+
+    if not (data.api_key or ANTHROPIC_API_KEY):
+        raise HTTPException(503, "Kein Anthropic-API-Key (weder im Request noch als ANTHROPIC_API_KEY)")
+
+    from invoice import extract_intents
+    client = get_anthropic_client(api_key=data.api_key)
+    result = await asyncio.to_thread(
+        extract_intents,
+        client=client,
+        model=data.model or "claude-haiku-4-5",
+        notes=data.notes,
+        context=data.context or {},
+    )
+    return result
+
+
 def _invoice_generate_pipeline(data: GenerateInvoiceRequest):
     """
-    Background-Pipeline: Template hochladen → Claude rendert via docx-Skill →
-    fertige DOCX downloaden → Callback an Laravel.
-    Sendet bei Erfolg UND bei jedem Fehler einen Callback (status: ready/failed).
+    VGSE-Pipeline (Vision-Grounded Structural Editing) im Hintergrund:
+      1. Template-Bytes -> Document-Map (python-docx)
+      2. Template -> Vision-Pages (doc-processor)
+      3. Claude Sonnet generiert Edit-Plan aus Vision + Map + Daten
+      4. Plan deterministisch via python-docx anwenden -> fertige DOCX
+      5. Optional Vorschau-PNG (erste Seite des Outputs) erzeugen
+    Callback an Laravel: status=ready (mit file_b64 + preview_image_b64 + ai_warning)
+    oder status=failed (mit error).
     """
+    from invoice import generate_invoice_vgse
+
     started_at = time.time()
     model = data.model or ANTHROPIC_INVOICE_MODEL
-    template_file_id = None
-    output_file_id = None
     usage_in = 0
     usage_out = 0
 
     try:
-        client = get_anthropic_client(api_key=data.api_key)
-
-        # 1) Template-DOCX als File ans Anthropic Files API hochladen.
         try:
             template_bytes = base64.b64decode(data.template_b64)
         except Exception as e:
-            raise RuntimeError(f"template_b64 ungültig: {e}")
+            raise RuntimeError(f"template_b64 ungueltig: {e}")
 
-        log.info("invoice %d job %d: upload template (%d bytes) → Anthropic Files API",
-                 data.invoice_id, data.job_id, len(template_bytes))
+        log.info("invoice %d job %d: VGSE-Pipeline startet (%d bytes Template, layout_rules=%d)",
+                 data.invoice_id, data.job_id, len(template_bytes), len(data.layout_rules or []))
 
-        upload_resp = client.beta.files.upload(
-            file=(data.template_filename, template_bytes,
-                  "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
-            extra_headers={"anthropic-beta": "files-api-2025-04-14"},
-        )
-        template_file_id = upload_resp.id
+        client = get_anthropic_client(api_key=data.api_key)
 
-        # 2) Prompt bauen — die Skill kennt python-docx, wir schicken die Daten als JSON.
-        data_json = json.dumps(data.document_data, ensure_ascii=False, indent=2)
-        prompt_text = _build_invoice_prompt(
-            data.output_filename, data.template_filename, data_json, data.prompt_hint
-        )
-
-        # 3) Messages-Call mit code_execution + docx-Skill + Template-File.
-        log.info("invoice %d: claude-call model=%s, template_file=%s",
-                 data.invoice_id, model, template_file_id)
-
-        # Anthropic erwartet das Template-File als container_upload-Block in der User-Message;
-        # `container` selbst akzeptiert nur `skills` (und optional eine bestehende container-id).
-        # tool_choice="any" ZWINGT Claude zur Tool-Nutzung beim ersten Turn — sonst antwortet
-        # Sonnet 4.5 manchmal nur mit Text und stop_reason=end_turn ohne die Skill auszufuehren.
-        msg = client.beta.messages.create(
+        output_bytes, meta = generate_invoice_vgse(
+            client=client,
             model=model,
+            template_bytes=template_bytes,
+            document_data=data.document_data,
+            layout_rules=list(data.layout_rules or []),
+            doc_processor_url=data.doc_processor_url,
+            doc_processor_secret=data.doc_processor_secret,
             max_tokens=data.max_tokens,
-            container={
-                "skills": [{"type": "anthropic", "skill_id": "docx", "version": "latest"}],
-            },
-            tools=[{"type": "code_execution_20250825", "name": "code_execution"}],
-            tool_choice={"type": "any"},
-            betas=["code-execution-2025-08-25", "skills-2025-10-02", "files-api-2025-04-14"],
-            messages=[{
-                "role": "user",
-                "content": [
-                    {"type": "container_upload", "file_id": template_file_id},
-                    {"type": "text", "text": prompt_text},
-                ],
-            }],
         )
-        log.info("invoice %d: claude responded stop_reason=%s, blocks=%d",
-                 data.invoice_id,
-                 getattr(msg, "stop_reason", "?"),
-                 len(msg.content or []))
 
-        usage_in = getattr(msg.usage, "input_tokens", 0) or 0
-        usage_out = getattr(msg.usage, "output_tokens", 0) or 0
+        usage_in  = int(meta.get("usage", {}).get("input_tokens",  0) or 0)
+        usage_out = int(meta.get("usage", {}).get("output_tokens", 0) or 0)
+        cost_usd  = float(meta.get("cost_usd") or 0.0)
+        ai_warning = meta.get("ai_warning")
 
-        # 4) Output-File-ID aus den tool_result-Blöcken extrahieren.
-        output_file_id = _extract_output_file_id(msg)
-        if not output_file_id:
-            # Diagnose-Dump: was hat Claude eigentlich zurueckgegeben?
-            _log_message_diagnostics(data.invoice_id, msg)
-            raise RuntimeError("Claude hat keine Output-DOCX produziert "
-                               "(stop_reason=" + str(getattr(msg, "stop_reason", "?")) + ")")
-
-        # 5) Output-DOCX downloaden.
-        log.info("invoice %d: download output file=%s", data.invoice_id, output_file_id)
-        dl = client.beta.files.download(
-            file_id=output_file_id,
-            extra_headers={"anthropic-beta": "files-api-2025-04-14"},
+        # Vorschau-PNG (erste Seite) der GERENDERTEN Rechnung. Nicht hartes Pflicht-
+        # Ergebnis — Fehler hier brechen den Render nicht ab.
+        preview_b64 = _render_first_page_preview(
+            output_bytes, data.doc_processor_url, data.doc_processor_secret, data.invoice_id
         )
-        output_bytes = dl.read()
-        if not output_bytes:
-            raise RuntimeError("Output-File ist leer")
 
         duration_ms = int((time.time() - started_at) * 1000)
-        cost_usd = _anthropic_cost_usd(model, usage_in, usage_out)
-
-        log.info("invoice %d job %d: ready in %dms, %d input + %d output tokens, $%.4f",
-                 data.invoice_id, data.job_id, duration_ms, usage_in, usage_out, cost_usd)
+        log.info("invoice %d job %d: ready in %dms, %d in + %d out tokens, $%.4f, ops=%d, warning=%s",
+                 data.invoice_id, data.job_id, duration_ms, usage_in, usage_out, cost_usd,
+                 meta.get("operations_count"), bool(ai_warning))
 
         send_callback(data.callback_url, {
-            "job_id":         data.job_id,
-            "invoice_id":     data.invoice_id,
-            "status":         "ready",
-            "file_b64":       base64.b64encode(output_bytes).decode("ascii"),
-            "filename":       data.output_filename,
-            "model":          model,
-            "usage":          {"input_tokens": usage_in, "output_tokens": usage_out},
-            "cost_usd":       round(cost_usd, 6),
-            "duration_ms":    duration_ms,
+            "job_id":            data.job_id,
+            "invoice_id":        data.invoice_id,
+            "status":            "ready",
+            "file_b64":          base64.b64encode(output_bytes).decode("ascii"),
+            "filename":          data.output_filename,
+            "preview_image_b64": preview_b64,
+            "ai_warning":        ai_warning,
+            "model":             model,
+            "usage":             {"input_tokens": usage_in, "output_tokens": usage_out},
+            "cost_usd":          round(cost_usd, 6),
+            "duration_ms":       duration_ms,
         })
 
     except Exception as e:
         duration_ms = int((time.time() - started_at) * 1000)
         cost_usd = _anthropic_cost_usd(model, usage_in, usage_out)
-        log.exception("invoice %d job %d: pipeline failed", data.invoice_id, data.job_id)
+        log.exception("invoice %d job %d: VGSE-pipeline failed", data.invoice_id, data.job_id)
         send_callback(data.callback_url, {
             "job_id":      data.job_id,
             "invoice_id":  data.invoice_id,
@@ -2268,147 +2270,36 @@ def _invoice_generate_pipeline(data: GenerateInvoiceRequest):
             "cost_usd":    round(cost_usd, 6),
             "duration_ms": duration_ms,
         })
-    finally:
-        # Hochgeladenes Template aufräumen (Skill-Files bleiben — werden nicht eigens
-        # gelöscht; Files API hat eigene Retention).
-        if template_file_id:
-            try:
-                client.beta.files.delete(
-                    file_id=template_file_id,
-                    extra_headers={"anthropic-beta": "files-api-2025-04-14"},
-                )
-            except Exception as cleanup_err:
-                log.warning("invoice %d: template-file cleanup fehlgeschlagen: %s",
-                            data.invoice_id, cleanup_err)
 
 
-def _build_invoice_prompt(output_filename: str, template_filename: str, data_json: str, hint: str) -> str:
-    """Baut den User-Prompt fuer die docx-Skill. Sprache: Deutsch.
-
-    Stil: imperativ, keine Erklaerungen, keine Diskussion. Sonnet 4.5 neigt sonst
-    dazu, in Text zu antworten statt das Tool zu nutzen.
-    """
-    hint_block = ""
-    if hint and hint.strip():
-        hint_block = (
-            "\n\nZUSAETZLICHE HINWEISE DES TRAINERS (sinngemaess ins Dokument einarbeiten,\n"
-            "ggf. unter den Positionen):\n"
-            f"{hint.strip()}\n"
-        )
-
-    return (
-        "AUFGABE: Fuelle eine Word-Rechnungsvorlage mit echten Daten und gib das "
-        "fertige .docx als Output-File zurueck.\n\n"
-        "VORGEHEN (genau diese Schritte, ohne Rueckfragen):\n"
-        "1. code_execution starten und python ausfuehren.\n"
-        f"2. Vorlage einlesen: from docx import Document; doc = Document('/mnt/user-data/uploads/{template_filename}')\n"
-        "   (Falls Pfad nicht stimmt: per os.listdir die einzige .docx unter /mnt/user-data/uploads/ finden.)\n"
-        "3. Alle Mustache-Platzhalter (z.B. {{recipient.name}}, {{items[0].description}}, {{totals.gross}}) "
-        "und alle Beispieltexte/Mock-Werte durch die echten Werte aus dem unten angefuegten JSON ersetzen.\n"
-        "4. Positions-Tabelle vollstaendig befuellen: jede Zeile aus items[] wird eine Tabellenzeile "
-        "mit description, quantity, unit, unit_price, tax_rate, line_gross.\n"
-        f"5. Speichern unter '/mnt/user-data/outputs/{output_filename}'.\n"
-        "6. Fertig. KEINE textuelle Zusammenfassung am Ende noetig.\n\n"
-        "FORMATIERUNGS-REGELN:\n"
-        "- Layout, Schriftarten, Farben, Logos, Header/Footer EXAKT beibehalten — nichts veraendern.\n"
-        "- Datum: TT.MM.JJJJ. Betraege: 2 Dezimalstellen, deutsches Trennzeichen, Waehrungssymbol "
-        "(z.B. 1.234,56 EUR).\n"
-        "- Felder die im JSON fehlen: leer lassen (Platzhalter entfernen).\n"
-        f"{hint_block}\n"
-        "DATEN (JSON):\n```json\n"
-        f"{data_json}\n```"
-    )
-
-
-def _extract_output_file_id(msg) -> Optional[str]:
-    """
-    Sucht in den Content-Blöcken der Antwort nach dem zuletzt erzeugten File.
-    Code-Execution liefert tool_result-Blöcke vom Typ
-    `bash_code_execution_tool_result` / `code_execution_tool_result`, deren
-    `content` ein verschachteltes `code_execution_output_block` mit `file_id`
-    enthalten kann. Wir traversieren rekursiv und nehmen das LETZTE gefundene
-    File, das nicht das Input-Template ist (anhand des Patterns "rechnung-*.docx"
-    laesst sich das nicht filtern, deshalb nur LETZTES).
-    """
-    last_id: Optional[str] = None
-    try:
-        for block in (msg.content or []):
-            fid = _walk_for_file_id(block)
-            if fid:
-                last_id = fid
-    except Exception as e:
-        log.warning("extract_output_file_id: parse failure: %s", e)
-    return last_id
-
-
-def _walk_for_file_id(node, depth: int = 0) -> Optional[str]:
-    """Rekursive Suche nach file_id in beliebig verschachtelten Strukturen."""
-    if node is None or depth > 8:
+def _render_first_page_preview(
+    docx_bytes: bytes, base_url: str, secret: str, invoice_id: int
+) -> Optional[str]:
+    """Holt die erste Seite des fertigen DOCX als PNG-Base64 (Best-Effort)."""
+    if not base_url or not secret:
         return None
-    last: Optional[str] = None
-    # Direktes Attribut/Key
-    fid = _file_id_from_item(node)
-    if fid:
-        last = fid
-    # Kinder: .content (Pydantic), 'content' (dict), generelle dict-values
-    children = []
-    if hasattr(node, "content"):
-        c = getattr(node, "content", None)
-        if c is not None:
-            children.append(c)
-    if isinstance(node, dict):
-        for v in node.values():
-            if v is not None:
-                children.append(v)
-    if isinstance(node, list):
-        children.extend(node)
-    for child in children:
-        sub = _walk_for_file_id(child, depth + 1)
-        if sub:
-            last = sub
-    return last
-
-
-def _file_id_from_item(item) -> Optional[str]:
-    """Liest file_id aus einem Tool-Result-Item (Pydantic-Model oder dict)."""
-    if item is None:
-        return None
-    if hasattr(item, "file_id"):
-        fid = getattr(item, "file_id", None)
-        if fid:
-            return str(fid)
-    if isinstance(item, dict):
-        if item.get("file_id"):
-            return str(item["file_id"])
-        if item.get("type") in {"file", "container_upload"} and item.get("id"):
-            return str(item["id"])
-    return None
-
-
-def _log_message_diagnostics(invoice_id: int, msg) -> None:
-    """
-    Bei `keine Output-DOCX`-Fehler: dump Block-Typen, Text-Snippets und
-    erkannte file_ids, damit wir verstehen warum Claude nichts produziert hat.
-    """
     try:
-        stop_reason = getattr(msg, "stop_reason", "?")
-        log.warning("invoice %d: NO OUTPUT FILE — stop_reason=%s, blocks:",
-                    invoice_id, stop_reason)
-        for i, block in enumerate(msg.content or []):
-            btype = getattr(block, "type", "?")
-            snippet = ""
-            if btype == "text":
-                txt = getattr(block, "text", "") or ""
-                snippet = (txt[:500] + "...") if len(txt) > 500 else txt
-            elif "tool_use" in btype:
-                inp = getattr(block, "input", None)
-                snippet = (str(inp)[:300] + "...") if inp and len(str(inp)) > 300 else str(inp)
-            elif "tool_result" in btype:
-                inner = getattr(block, "content", None)
-                snippet = (str(inner)[:500] + "...") if inner and len(str(inner)) > 500 else str(inner)
-            log.warning("  [%d] type=%s snippet=%s", i, btype, snippet)
+        with httpx.Client(timeout=60) as cli:
+            resp = cli.post(
+                base_url.rstrip("/") + "/docx/render-pages",
+                json={
+                    "docx_b64":  base64.b64encode(docx_bytes).decode("ascii"),
+                    "max_pages": 1,
+                    "dpi":       110,
+                },
+                headers={"Authorization": f"Bearer {secret}"},
+            )
+        if resp.status_code >= 400:
+            log.warning("invoice %d: preview-render HTTP %d: %s",
+                        invoice_id, resp.status_code, resp.text[:200])
+            return None
+        pages = (resp.json() or {}).get("pages") or []
+        if not pages:
+            return None
+        return pages[0].get("png_b64")
     except Exception as e:
-        log.warning("invoice %d: diagnostics dump failed: %s", invoice_id, e)
+        log.warning("invoice %d: preview-render failed: %s", invoice_id, e)
+        return None
 
 
 def _anthropic_cost_usd(model: str, input_tokens: int, output_tokens: int) -> float:
