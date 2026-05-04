@@ -43,12 +43,22 @@ def build_document_map(docx_bytes: bytes) -> dict:
 
     for block in _iter_body_blocks(doc):
         if isinstance(block, Paragraph):
-            paragraphs.append({
+            text = block.text or ""
+            tab_count = text.count("\t")
+            # Tabstop-Paragraphs sind „Pseudo-Tabellenzeilen" — die Vorlage benutzt
+            # Tab-Stops statt echter <w:tbl>. Claude muss das erkennen, sonst
+            # versucht er pro Spalte ein eigenes set_text und das Layout kollabiert.
+            has_tabs = tab_count > 0 or _pPr_has_tabs(block)
+            entry = {
                 "id":       f"P{p_idx}",
-                "text":     _truncate(block.text or ""),
+                "text":     _truncate(text),
                 "style":    _style_name(block),
                 "in_table": False,
-            })
+            }
+            if has_tabs:
+                entry["has_tabs"] = True
+                entry["tab_count"] = tab_count
+            paragraphs.append(entry)
             p_idx += 1
         elif isinstance(block, Table):
             tables.append(_table_to_map(block, t_idx))
@@ -99,6 +109,18 @@ def _style_name(p: Paragraph) -> str:
         return (p.style.name if p.style is not None else "Normal") or "Normal"
     except Exception:
         return "Normal"
+
+
+def _pPr_has_tabs(p: Paragraph) -> bool:
+    """True, wenn der Paragraph in seinen Properties Tab-Stops definiert hat
+    (auch ohne aktuell vorhandene \\t-Zeichen — z.B. leere Vorlagenzeile)."""
+    try:
+        pPr = p._p.find(qn("w:pPr"))
+        if pPr is None:
+            return False
+        return pPr.find(qn("w:tabs")) is not None
+    except Exception:
+        return False
 
 
 def _truncate(s: str) -> str:

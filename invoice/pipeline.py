@@ -24,7 +24,7 @@ from .cost import anthropic_cost_usd
 from .document_map import build_document_map
 from .edit_applier import apply_edit_plan
 from .edit_plan import EditPlan, validate_edit_plan
-from .prompts import EDIT_PLAN_SYSTEM, edit_plan_user
+from .prompts import EDIT_PLAN_SYSTEM, edit_plan_user, translate_layout_rules
 
 log = logging.getLogger("ai-gateway.invoice.pipeline")
 
@@ -58,13 +58,16 @@ def generate_invoice_vgse(
     )
 
     # Phase 2b — Claude Sonnet bauen den Edit-Plan.
+    # snake_case-Tokens vor der Uebergabe in konkrete Anweisungen uebersetzen,
+    # damit Claude nicht raten muss was 'mwst_zeile_pro_satz_anzeigen' bedeutet.
+    rules_translated = translate_layout_rules(layout_rules)
     plan_raw, usage_in, usage_out = _call_claude_for_edit_plan(
         client=client,
         model=model,
         max_tokens=max_tokens,
         document_map=document_map,
         document_data=document_data,
-        layout_rules=layout_rules,
+        layout_rules=rules_translated,
         page_pngs=[p["png_b64"] for p in pages],
     )
 

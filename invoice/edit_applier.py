@@ -25,6 +25,7 @@ from typing import Iterable
 from docx import Document
 from docx.document import Document as _DocumentT
 from docx.oxml.ns import qn
+from docx.oxml import OxmlElement
 from docx.table import Table, _Row
 from docx.text.paragraph import Paragraph
 
@@ -52,6 +53,13 @@ def apply_edit_plan(docx_bytes: bytes, plan: EditPlan) -> tuple[bytes, dict]:
                 # Indices der Tabellen koennen sich nicht aendern (wir editieren
                 # innerhalb derselben <w:tbl>) — Re-Index nur fuer Paragraphs noetig,
                 # die hier nicht beruehrt wurden. Kein Re-Index noetig.
+            elif op.op == "clone_paragraph_rows":
+                _apply_clone_paragraph_rows(paragraphs, op, report)
+                # Wir fuegen neue <w:p> direkt vor dem Vorlagen-Element ein und
+                # entfernen die Vorlage. paragraphs[]-Indices der OBERHALB stehenden
+                # P-IDs bleiben gueltig — die nachfolgenden P-IDs verschieben sich
+                # zwar in der XML, aber unsere Liste haelt weiterhin die alten
+                # Element-Referenzen, also greifen folgende set_text-Ops korrekt.
             elif op.op == "delete_paragraph":
                 _apply_delete_paragraph(paragraphs, op.target, report)
                 # Nach Delete: die nachfolgenden Paragraphs behalten ihre alten IDs
@@ -177,17 +185,83 @@ def _apply_delete_paragraph(paragraphs: list[Paragraph | None], target: str, rep
     paragraphs[idx] = None
 
 
+def _apply_clone_paragraph_rows(paragraphs: list[Paragraph | None], op, report: dict) -> None:
+    """Pseudotabelle aus Tabstop-Paragraphs aufbauen.
+
+    Vorgehen analog zu rebuild_table_rows, nur auf <w:p>-Ebene:
+      1. Vorlagen-Paragraph (target) deep-copy als Klon-Quelle merken.
+      2. Pro Datenzeile: Klon erzeugen, Text durch Tab-getrennte Werte ersetzen
+         (echte <w:tab/>-Elemente, NICHT \\t als Text-Char), Klon vor der Vorlage
+         in den Body einfuegen.
+      3. Vorlage selbst entfernen.
+    """
+    idx = _parse_p_id(op.target)
+    if idx is None or idx >= len(paragraphs) or paragraphs[idx] is None:
+        report["skipped"].append({"target": op.target, "reason": "Vorlagen-Paragraph nicht gefunden"})
+        return
+    template_p = paragraphs[idx]
+    template_el = copy.deepcopy(template_p._element)
+    parent = template_p._element.getparent()
+    if parent is None:
+        report["skipped"].append({"target": op.target, "reason": "Vorlagen-Paragraph hat kein Parent"})
+        return
+
+    for data_row in op.data_rows:
+        new_el = copy.deepcopy(template_el)
+        new_p = Paragraph(new_el, template_p._parent)
+        # Tab-getrennten Text setzen — die data_row-Eintraege werden mit \t
+        # zu einem String und dann via _replace_paragraph_text in Runs +
+        # echten <w:tab/>-Elementen verteilt.
+        joined = "\t".join(str(c) for c in data_row)
+        _replace_paragraph_text(new_p, joined)
+        template_p._element.addprevious(new_el)
+
+    # Vorlagen-Paragraph entfernen.
+    parent.remove(template_p._element)
+    paragraphs[idx] = None
+
+
 # ── Helfer ─────────────────────────────────────────────────────────────
 
 def _replace_paragraph_text(p: Paragraph, value: str) -> None:
-    """Ersetzt den Text und behaelt das Format des ersten Runs."""
+    """Ersetzt den Text und behaelt das Format des ersten Runs.
+
+    Tab-Zeichen (\\t) im Wert werden als echte <w:tab/>-Elemente eingefuegt,
+    damit Tab-Stops aus den Paragraph-Properties greifen (Pseudotabellen-Layout)."""
     runs = p.runs
     if not runs:
-        p.add_run(value)
-        return
-    runs[0].text = value
+        p.add_run("")
+        runs = p.runs
+
+    # Alle Runs ausser dem ersten leeren — Format des ersten Runs erhalten.
+    first_run = runs[0]
     for run in runs[1:]:
         run.text = ""
+        # Auch Tab-Elemente im Run entfernen, sonst bleiben Doppel-Tabs stehen.
+        for tab_el in list(run._r.findall(qn("w:tab"))):
+            run._r.remove(tab_el)
+
+    # Ersten Run zuruecksetzen: Text + Tabs im Run entfernen.
+    first_run.text = ""
+    for tab_el in list(first_run._r.findall(qn("w:tab"))):
+        first_run._r.remove(tab_el)
+
+    if "\t" not in value:
+        first_run.text = value
+        return
+
+    # Tab-getrennt: Stueckweise wechseln zwischen Text-Setzen und <w:tab/>-Anhaengen
+    # am ersten Run (Format bleibt erhalten — alle Stuecke teilen die gleiche rPr).
+    parts = value.split("\t")
+    first_run.text = parts[0]
+    for part in parts[1:]:
+        tab_el = OxmlElement("w:tab")
+        first_run._r.append(tab_el)
+        if part != "":
+            t_el = OxmlElement("w:t")
+            t_el.text = part
+            t_el.set(qn("xml:space"), "preserve")
+            first_run._r.append(t_el)
 
 
 def _parse_p_id(s: str) -> int | None:
